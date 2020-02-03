@@ -23,11 +23,15 @@
 //
 #include "hdPrman/material.h"
 #include "hdPrman/context.h"
-#include "hdPrman/convertPreviewMaterial.h"
 #include "hdPrman/debugCodes.h"
 #include "hdPrman/renderParam.h"
+#include "hdPrman/matfiltConversions.h"
+#include "hdPrman/matfiltConvertPreviewMaterial.h"
+#include "hdPrman/matfiltFilterChain.h"
+#include "hdPrman/matfiltResolveVstructs.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/base/tf/staticData.h"
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hf/diagnostic.h"
@@ -42,16 +46,39 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
-    (PbsNetworkMaterialStandIn_2)
-    (PxrSurface)
     (PxrDisplace)
-    (MaterialLayer_1)
-    (MaterialLayer_2)
     (bxdf)
-    (displacement)
-    (pbsMaterialIn)
-    (inputMaterial)
+    (OSL)
 );
+
+TF_MAKE_STATIC_DATA(NdrTokenVec, _sourceTypes) {
+    *_sourceTypes = { TfToken("OSL"), TfToken("RmanCpp") };
+}
+
+TfTokenVector const&
+HdPrmanMaterial::GetShaderSourceTypes()
+{
+    return *_sourceTypes;
+}
+
+TF_MAKE_STATIC_DATA(MatfiltFilterChain, _filterChain) {
+    *_filterChain = {
+        MatfiltConvertPreviewMaterial,
+        MatfiltResolveVstructs
+    };
+}
+
+MatfiltFilterChain
+HdPrmanMaterial::GetFilterChain()
+{
+    return *_filterChain;
+}
+
+void
+HdPrmanMaterial::SetFilterChain(MatfiltFilterChain const& chain)
+{
+    *_filterChain = chain;
+}
 
 HdPrmanMaterial::HdPrmanMaterial(SdfPath const& id)
     : HdMaterial(id)
@@ -87,513 +114,309 @@ HdPrmanMaterial::_ResetMaterial(HdPrman_Context *context)
     }
 }
 
-
-// Apply studio-specific network transformations, similar to what
-// PxRfkPbsNetworkMaterialStandInResolveOp does in katana.
-//
-// Roughly speaking, this means: 
-// - using the bxdf relationship to imply displacement as well
-// - PbsNetworkMaterialStandIn_2 substitution
-// - conditional vstruct expansion (vstructConditionalExpr metadata)
-//
-// XXX Ideally this logic can be eventually be driven by the
-// SdrRegistry or a related helper library.
-//
-static void
-_ApplyStudioFixes(HdMaterialNetworkMap *netMap)
-{
-    HdMaterialNetwork bxdfNet, dispNet;
-    TfMapLookup(netMap->map, _tokens->bxdf, &bxdfNet);
-    TfMapLookup(netMap->map, _tokens->displacement, &dispNet);
-
-    // If no disp network was bound, try using the "bxdf" network
-    // for that purpose.
-    if (dispNet.nodes.empty() && !bxdfNet.nodes.empty()) {
-        dispNet = bxdfNet;
-    }
-
-    // bxdf
-    for (HdMaterialNode &node: bxdfNet.nodes) {
-        if (node.identifier == _tokens->PbsNetworkMaterialStandIn_2) {
-            node.identifier = _tokens->PxrSurface;
-        }
-        // XXX Hacky upgrade for testing w/ existing show assets
-        if (node.identifier == _tokens->MaterialLayer_1) {
-            node.identifier = _tokens->MaterialLayer_2;
-        }
-    }
-    for (HdMaterialRelationship &rel: bxdfNet.relationships) {
-        if (rel.outputName == _tokens->pbsMaterialIn) {
-            rel.outputName = _tokens->inputMaterial;
-        }
-    }
-
-    // displacement
-    for (HdMaterialNode &node: dispNet.nodes) {
-        if (node.identifier == _tokens->PbsNetworkMaterialStandIn_2) {
-            node.identifier = _tokens->PxrDisplace;
-            // XXX Ideally, we could prune any non-displacement
-            // parameters, to avoid warnings from Renderman.
-        }
-    }
-    for (HdMaterialRelationship &rel: dispNet.relationships) {
-        if (rel.outputName == _tokens->pbsMaterialIn) {
-            rel.outputName = _tokens->inputMaterial;
-        }
-    }
-
-    // Commit fixed networks
-    netMap->map[_tokens->bxdf] = bxdfNet;
-    netMap->map[_tokens->displacement] = dispNet;
-}
-
-static void
-_FindShaders(
-    const std::vector<HdMaterialNode> &nodes,
-    std::vector<SdrShaderNodeConstPtr> *result)
-{
-    auto& reg = SdrRegistry::GetInstance();
-    result->resize(nodes.size());
-    for (size_t i=0; i < nodes.size(); ++i) {
-        NdrIdentifier id = nodes[i].identifier;
-        if (SdrShaderNodeConstPtr oslNode = reg.GetShaderNodeByIdentifierAndType(
-                id, TfToken("OSL"))) {
-            (*result)[i] = oslNode;
-        } else if (SdrShaderNodeConstPtr rmapCppNode= 
-                reg.GetShaderNodeByIdentifierAndType(id, TfToken("RmanCpp"))) {
-            (*result)[i] = rmapCppNode;
-        } else {
-            (*result)[i] = nullptr;
-            TF_WARN("Did not find shader %s\n", id.GetText());
-        }
-    }
-}
-
-static void
-_ExpandVstructs(
-    HdMaterialNetwork *mat,
-    const std::vector<SdrShaderNodeConstPtr> &shaders)
-{
-    if (!TF_VERIFY(mat->nodes.size() == shaders.size())) {
-        return;
-    }
-    std::vector<HdMaterialRelationship> result;
-    // Check all input relationships for ones that imply vstruct connections.
-    for (HdMaterialRelationship const& rel: mat->relationships) {
-        // To check vstruct-status we need the shader entry.
-        // Find the downstream HdMaterialNetwork node.  O(n).
-        int outputNodeIndex = -1;
-        for (size_t i = 0; i < mat->nodes.size(); ++i) {
-            if (mat->nodes[i].path == rel.outputId) {
-                outputNodeIndex = i;
-                break;
-            }
-        }
-        if (outputNodeIndex == -1) {
-            // This can happen if the material network contains a bogus
-            // connection path.
-            TF_WARN("Invalid connection to unknown output node '%s'; "
-                    "ignoring.", rel.outputId.GetText());
-            continue;
-        }
-        SdrShaderNodeConstPtr outputShader = shaders[outputNodeIndex];
-        if (!outputShader) {
-            TF_WARN("Invalid connection to output node '%s' with "
-                             "unknown shader entry; ignoring.",
-                             rel.outputId.GetText());
-            continue;
-        }
-        // The output of the connection is an input of outputShader.
-        SdrShaderPropertyConstPtr outputProp =
-            outputShader->GetShaderInput(rel.outputName);
-        if (!outputProp) {
-            TF_WARN("Unknown output property %s on %s with id %s",
-                    rel.outputName.GetText(),
-                    rel.outputId.GetText(),
-                    outputShader->GetName().c_str());
-            continue;
-        }
-
-        // Look up the input shader and property.
-        int inputNodeIndex = -1;
-        for (size_t i = 0; i < mat->nodes.size(); ++i) {
-            if (mat->nodes[i].path == rel.inputId) {
-                inputNodeIndex = i;
-                break;
-            }
-        }
-        if (inputNodeIndex == -1) {
-            // This can happen if the material network contains a bogus
-            // connection path.
-            TF_WARN("Invalid connection to unknown input node '%s'; "
-                "ignoring.", rel.inputId.GetText());
-            continue;
-        }
-        SdrShaderNodeConstPtr inputShader = shaders[inputNodeIndex];
-        if (!inputShader) {
-            TF_WARN("Invalid connection to input node '%s' with "
-                "unknown shader entry; ignoring.", rel.inputId.GetText());
-            continue;
-        }
-        SdrShaderPropertyConstPtr inputProp =
-            inputShader->GetShaderOutput(rel.inputName);
-        if (!inputProp) {
-            TF_WARN("Unknown input property %s on %s for shader %s",
-                    rel.inputName.GetText(),
-                    rel.inputId.GetText(),
-                    inputShader->GetName().c_str());
-            continue;
-        }
-
-        // XXX src vs input vstruct ness
-        if (!outputProp->IsVStruct() && !inputProp->IsVStruct()) {
-            // Not a vstruct.  Retain as-is.
-            result.push_back(rel);
-            continue;
-        }
-
-        std::string outputVstructName = outputProp->GetName();
-        std::string inputVstructName = inputProp->GetName();
-
-        // Find corresponding vstruct properties on the nodes.
-        for (TfToken const& outputName: inputShader->GetOutputNames()) {
-            auto const& input = inputShader->GetShaderOutput(outputName);
-            if (input->GetVStructMemberOf() != inputVstructName) {
-                continue;
-            }
-            TF_VERIFY(input->IsVStructMember());
-            std::string member = input->GetVStructMemberName();
-
-            // Find the corresponding input on outputShader.
-            for (TfToken const& inputName: outputShader->GetInputNames()) {
-                auto const& output = outputShader->GetShaderInput(inputName);
-                if (output->GetVStructMemberOf() != outputVstructName) {
-                    // Different vstruct, or not part of a vstruct
-                    continue;
-                }
-                if (output->GetVStructMemberName() != member) {
-                    // Different field of this vstruct
-                    continue;
-                }
-
-                // Check if there is already an explicit connection
-                // or value for that input -- either will take
-                // precedence over the implicit vstruct connection.
-                bool hasLocalValue = false;
-                for (auto const& param:
-                     mat->nodes[outputNodeIndex].parameters) {
-                    if (param.first == output->GetName()) {
-                        hasLocalValue = true;
-                        break;
-                    }
-                }
-                if (hasLocalValue) {
-                    // This member has a local ("output") value.  Skip.
-                    continue;
-                }
-                bool hasExplicitConnection = false;
-                for (HdMaterialRelationship const& r: mat->relationships) {
-                    if (r.outputId == rel.outputId &&
-                        r.outputName == output->GetName()) {
-                        hasExplicitConnection = true;
-                        break;
-                    }
-                }
-                if (hasExplicitConnection) {
-                    // This member is already connected.
-                    continue;
-                }
-
-                // Create the implied connection.
-                HdMaterialRelationship newRel {
-                    rel.inputId,
-                    input->GetName(),
-                    rel.outputId,
-                    output->GetName()
-                };
-                result.push_back(newRel);
-            }
-        }
-    }
-    std::swap(mat->relationships, result);
-}
-
 static VtArray<GfVec3f>
 _ConvertToVec3fArray(const VtArray<GfVec3d>& v)
 {
     VtArray<GfVec3f> out;
     out.resize(v.size());
-
-    for (size_t i=0; i<v.size(); ++i)
-        for (uint8_t e=0; e<3; ++e)
+    for (size_t i=0; i<v.size(); ++i) {
+        for (uint8_t e=0; e<3; ++e) {
             out[i][e] = v[i][e];
-
-
+        }
+    }
     return out;
 }
 
-static void
-_MapHdNodesToRileyNodes(
+// Recursively convert a Matfilt node and its upstream dependencies
+// to Riley equivalents.  Avoids adding redundant nodes in the case
+// of multi-path dependencies.
+static bool
+_ConvertNodes(
     RixRileyManager *mgr,
-    const HdMaterialNetwork &mat,
-    const std::vector<SdrShaderNodeConstPtr> &shaders,
+    MatfiltNetwork const& network,
+    SdfPath const& nodePath,
     std::vector<riley::ShadingNode> *result)
 {
-    result->clear();
-    result->reserve(mat.nodes.size());
-    if (!TF_VERIFY(mat.nodes.size() == shaders.size())) {
-        return;
+    // Find matfilt node.
+    auto iter = network.nodes.find(nodePath);
+    if (iter == network.nodes.end()) {
+        // This could be caused by a bad connection to a non-existent node.
+        TF_WARN("Unknown material node '%s'", nodePath.GetText());
+        return false;
     }
-    for (size_t i=0; i < mat.nodes.size(); ++i) {
-        if (!shaders[i]) {
-            TF_WARN("Unknown shader entry '%s' for node '%s'",
-                             mat.nodes[i].identifier.GetText(),
-                             mat.nodes[i].path.GetText());
-            // It is possible the material is unusable now, but continue
-            // to pull in as much of the graph as possible in case it
-            // helps diagnosis.
-            continue;
-        }
-
-        // Create equivalent Riley shading node.
-        riley::ShadingNode sn;
-        //if (shaders[i]->GetContext() == SdrNodeContext->Surface) {
-        if (shaders[i]->GetContext() == TfToken("bxdf")) {
-            sn.type = riley::ShadingNode::k_Bxdf;
-        } else if (shaders[i]->GetContext() == SdrNodeContext->Pattern ||
-                   shaders[i]->GetContext() == TfToken("OSL")) {
-            sn.type = riley::ShadingNode::k_Pattern;
-        } else if (shaders[i]->GetContext() == SdrNodeContext->Displacement) {
-            sn.type = riley::ShadingNode::k_Displacement;
-        } else {
-            // This can happen if the material accidentally references
-            // a non-shading node type such as a light or light-filter.
-            TF_WARN("Unknown shader entry type '%s' for shader '%s'",
-                    shaders[i]->GetContext().GetText(),
-                    shaders[i]->GetName().c_str());
-            continue;
-        }
-        sn.handle = RtUString(mat.nodes[i].path.GetText());
-        sn.name = RtUString(shaders[i]->GetImplementationName().c_str());
-        RixParamList *params = mgr->CreateRixParamList();
-        sn.params = params;
-        result->push_back(sn);
-
-        // Convert params
-        for (const auto param: mat.nodes[i].parameters) {
-            const SdrShaderProperty* prop =
-                shaders[i]->GetShaderInput(param.first);
-            if (!prop) {
-                TF_DEBUG(HDPRMAN_MATERIALS)
-                    .Msg("Unknown shader property '%s' for "
-                         "shader '%s' at '%s'; ignoring.",
-                         param.first.GetText(),
-                         shaders[i]->GetName().c_str(),
-                         mat.nodes[i].path.GetText());
-                continue;
-            }
-            TfToken propType = prop->GetType();
-            if (propType.IsEmpty()) {
-                // As a special case, silently ignore these on PxrDisplace.
-                // Automatically promoting the same network for this
-                // case causes a lot of errors.
-                if (mat.nodes[i].identifier == _tokens->PxrDisplace) {
-                    continue;
-                }
-                TF_DEBUG(HDPRMAN_MATERIALS)
-                    .Msg("Unknown shader entry field type for "
-                         "field '%s' on shader '%s' at '%s'; ignoring.",
-                         param.first.GetText(),
-                         shaders[i]->GetName().c_str(),
-                         mat.nodes[i].path.GetText());
-                continue;
-            }
-
-            // Dispatch by propType and VtValue-held type.
-            // Cast value types to match where feasible.
-            bool ok = false;
-            RtUString name(prop->GetImplementationName().c_str());
-            if (propType == SdrPropertyTypes->Struct ||
-                propType == SdrPropertyTypes->Vstruct) {
-                // Ignore structs.  They are only used as ways to
-                // pass data between shaders, not as a way to pass
-                // in parameters.
-                ok = true;
-            } else if (param.second.IsHolding<GfVec3f>()) {
-                GfVec3f v = param.second.UncheckedGet<GfVec3f>();
-                if (propType == SdrPropertyTypes->Color) {
-                    params->SetColor(name, RtColorRGB(v[0], v[1], v[2]));
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Vector) {
-                    params->SetVector(name, RtVector3(v[0], v[1], v[2]));
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Point) {
-                    params->SetPoint(name, RtPoint3(v[0], v[1], v[2]));
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Normal) {
-                    params->SetNormal(name, RtNormal3(v[0], v[1], v[2]));
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<VtArray<GfVec3f>>()) {
-                VtArray<GfVec3f> v =
-                    param.second.UncheckedGet<VtArray<GfVec3f>>();
-                if (propType == SdrPropertyTypes->Color) {
-                    params->SetColorArray(
-                        name,
-                        reinterpret_cast<const RtColorRGB*>(v.cdata()),
-                        v.size());
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Vector) {
-                    params->SetVectorArray(
-                        name,
-                        reinterpret_cast<const RtVector3*>(v.cdata()),
-                        v.size());
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Point) {
-                    params->SetPointArray(
-                        name,
-                        reinterpret_cast<const RtPoint3*>(v.cdata()),
-                        v.size());
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Normal) {
-                    params->SetNormalArray(
-                        name,
-                        reinterpret_cast<const RtNormal3*>(v.cdata()),
-                        v.size());
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<GfVec3d>()) {
-                const GfVec3d& v = param.second.UncheckedGet<GfVec3d>();
-                if (propType == SdrPropertyTypes->Color) {
-                    params->SetColor(name, RtColorRGB(v[0], v[1], v[2]));
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<VtArray<GfVec3d>>()) {
-                if (propType == SdrPropertyTypes->Color) {
-                    const VtArray<GfVec3d>& vd =
-                        param.second.UncheckedGet<VtArray<GfVec3d>>();
-                    VtArray<GfVec3f> v = _ConvertToVec3fArray(vd);
-                    params->SetColorArray(
-                        name,
-                        reinterpret_cast<const RtColorRGB*>(v.cdata()),
-                        v.size());
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<float>()) {
-                float v = param.second.UncheckedGet<float>();
-                if (propType == SdrPropertyTypes->Int) {
-                    params->SetInteger(name, int(v));
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Float) {
-                    params->SetFloat(name, v);
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<VtArray<float>>()) {
-                VtArray<float> v = param.second.UncheckedGet<VtArray<float>>();
-                if (propType == SdrPropertyTypes->Float) {
-                    params->SetFloatArray(name, v.cdata(), v.size());
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<int>()) {
-                int v = param.second.UncheckedGet<int>();
-                if (propType == SdrPropertyTypes->Float) {
-                    params->SetFloat(name, v);
-                    ok = true;
-                } else if (propType == SdrPropertyTypes->Int) {
-                    params->SetInteger(name, v);
-                    ok = true;
-                }
-            } else if (param.second.IsHolding<TfToken>()) {
-                TfToken v = param.second.UncheckedGet<TfToken>();
-                params->SetString(name, RtUString(v.GetText()));
-                ok = true;
-            } else if (param.second.IsHolding<std::string>()) {
-                std::string v = param.second.UncheckedGet<std::string>();
-                params->SetString(name, RtUString(v.c_str()));
-                ok = true;
-            } else if (param.second.IsHolding<SdfAssetPath>()) {
-                SdfAssetPath p = param.second.Get<SdfAssetPath>();
-                std::string v = p.GetResolvedPath();
-                if (v.empty()) {
-                    v = p.GetAssetPath();
-                }
-                params->SetString(name, RtUString(v.c_str()));
-                ok = true;
-            } else if (param.second.IsHolding<bool>()) {
-                // RixParamList (specifically, RixDataType) doesn't have
-                // a bool entry; we convert to integer instead.
-                int v = param.second.UncheckedGet<bool>();
-                params->SetInteger(name, v);
-                ok = true;
-            }
-            if (!ok) {
-                TF_DEBUG(HDPRMAN_MATERIALS)
-                    .Msg("Unknown shading parameter type '%s'; skipping "
-                         "parameter '%s' on node '%s' ('%s'); "
-                         "expected type '%s'",
-                         param.second.GetTypeName().c_str(),
-                         param.first.GetText(),
-                         mat.nodes[i].path.GetText(),
-                         shaders[i]->GetName().c_str(),
-                         propType.GetText());
-            }
-        }
-
-        // Convert relationships.
-        for (const HdMaterialRelationship &rel: mat.relationships) {
-            // Handle only the relationships that feed this node's inputs.
-            if (rel.outputId != mat.nodes[i].path) {
-                continue;
-            }
-            // Find the output & input shader nodes of the connection.
-            SdrShaderNodeConstPtr outputShader = shaders[i];
-            SdrShaderNodeConstPtr inputShader = nullptr;
-            for (size_t j=0; j < mat.nodes.size(); ++j) {
-                if (mat.nodes[j].path == rel.inputId) {
-                    inputShader = shaders[j];
+    MatfiltNode const& node = iter->second;
+    // Riley expects nodes to be provided in topological dependency order.
+    // Pre-traverse upstream nodes.
+    for (auto const& connEntry: node.inputConnections) {
+        for (auto const& e: connEntry.second) {
+            // Check if this node was already reached via another
+            // connection path.
+            bool upstreamNodeWasVisited = false;
+            // O(nm) for n nodes and m connections.  We expect n and m
+            // to remain small, but may need to revisit if we see much
+            // larger networks in the future.
+            for (riley::ShadingNode const &sn: *result) {
+                if (e.upstreamNode.GetString() == sn.handle.CStr()) {
+                    upstreamNodeWasVisited = true;
                     break;
                 }
             }
-            if (!inputShader) {
-                TF_WARN("Unknown shader for connection input '%s' on '%s' "
-                        "connected from '%s'; ignoring.",
-                        rel.inputName.GetText(),
-                        rel.inputId.GetText(),
-                        mat.nodes[i].path.GetText());
+            if (!upstreamNodeWasVisited) {
+                _ConvertNodes(mgr, network, e.upstreamNode, result);
+            }
+        }
+    }
+    // Find shader registry entry.
+    SdrRegistry &sdrRegistry = SdrRegistry::GetInstance();
+    SdrShaderNodeConstPtr sdrEntry =
+        sdrRegistry.GetShaderNodeByIdentifier(node.nodeTypeId, *_sourceTypes);
+    if (!sdrEntry) {
+        TF_WARN("Unknown shader ID %s for node <%s>\n",
+                node.nodeTypeId.GetText(), nodePath.GetText());
+        return false;
+    }
+    // Create equivalent Riley shading node.
+    result->push_back(riley::ShadingNode());
+    riley::ShadingNode &sn = result->back();
+    if (sdrEntry->GetContext() == _tokens->bxdf ||
+        sdrEntry->GetContext() == SdrNodeContext->Surface ||
+        sdrEntry->GetContext() == SdrNodeContext->Volume) {
+        sn.type = riley::ShadingNode::k_Bxdf;
+    } else if (sdrEntry->GetContext() == SdrNodeContext->Pattern ||
+               sdrEntry->GetContext() == _tokens->OSL) {
+        sn.type = riley::ShadingNode::k_Pattern;
+    } else if (sdrEntry->GetContext() == SdrNodeContext->Displacement) {
+        sn.type = riley::ShadingNode::k_Displacement;
+    } else {
+        // This can happen if the material accidentally references
+        // a non-shading node type such as a light or light-filter.
+        TF_WARN("Unknown shader entry type '%s' for shader '%s'",
+                sdrEntry->GetContext().GetText(), sdrEntry->GetName().c_str());
+        return false;
+    }
+    sn.handle = RtUString(nodePath.GetText());
+    std::string implName = sdrEntry->GetImplementationName();
+    if (sdrEntry->GetSourceType() == _tokens->OSL) {
+        // Explicitly specify the .oso extension to avoid possible
+        // mix-up between C++ and OSL shaders of the same name.
+        implName += ".oso";
+    }
+    sn.name = RtUString(implName.c_str());
+    RixParamList *params = mgr->CreateRixParamList();
+    sn.params = params;
+    // Convert params
+    for (const auto& param: node.parameters) {
+        const SdrShaderProperty* prop = sdrEntry->GetShaderInput(param.first);
+        if (!prop) {
+            TF_DEBUG(HDPRMAN_MATERIALS)
+                .Msg("Unknown shader property '%s' for "
+                     "shader '%s' at '%s'; ignoring.\n",
+                     param.first.GetText(),
+                     sdrEntry->GetName().c_str(),
+                     nodePath.GetText());
+            continue;
+        }
+        TfToken propType = prop->GetType();
+        if (propType.IsEmpty()) {
+            // As a special case, silently ignore these on PxrDisplace.
+            // Automatically promoting the same network for this
+            // case causes a lot of errors.
+            if (node.nodeTypeId == _tokens->PxrDisplace) {
                 continue;
             }
+            TF_DEBUG(HDPRMAN_MATERIALS)
+                .Msg("Unknown shader entry field type for "
+                     "field '%s' on shader '%s' at '%s'; ignoring.\n",
+                     param.first.GetText(),
+                     sdrEntry->GetName().c_str(),
+                     nodePath.GetText());
+            continue;
+        }
 
+        // Dispatch by propType and VtValue-held type.
+        // Cast value types to match where feasible.
+        bool ok = false;
+        RtUString name(prop->GetImplementationName().c_str());
+        if (propType == SdrPropertyTypes->Struct ||
+            propType == SdrPropertyTypes->Vstruct) {
+            // Ignore structs.  They are only used as ways to
+            // pass data between shaders, not as a way to pass
+            // in parameters.
+            ok = true;
+        } else if (param.second.IsHolding<GfVec2f>()) {
+            GfVec2f v = param.second.UncheckedGet<GfVec2f>();
+            if (propType == SdrPropertyTypes->Float) {
+                params->SetFloatArray(name, v.data(), 2);
+                ok = true;
+            } 
+        } else if (param.second.IsHolding<GfVec3f>()) {
+            GfVec3f v = param.second.UncheckedGet<GfVec3f>();
+            if (propType == SdrPropertyTypes->Color) {
+                params->SetColor(name, RtColorRGB(v[0], v[1], v[2]));
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Vector) {
+                params->SetVector(name, RtVector3(v[0], v[1], v[2]));
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Point) {
+                params->SetPoint(name, RtPoint3(v[0], v[1], v[2]));
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Normal) {
+                params->SetNormal(name, RtNormal3(v[0], v[1], v[2]));
+                ok = true;
+            }
+        } else if (param.second.IsHolding<GfVec4f>()) {
+            GfVec4f v = param.second.UncheckedGet<GfVec4f>();
+            if (propType == SdrPropertyTypes->Float) {
+                params->SetFloatArray(name, v.data(), 4);
+                ok = true;
+            } 
+        } else if (param.second.IsHolding<VtArray<GfVec3f>>()) {
+            const VtArray<GfVec3f>& v =
+                param.second.UncheckedGet<VtArray<GfVec3f>>();
+            if (propType == SdrPropertyTypes->Color) {
+                params->SetColorArray(
+                                      name,
+                                      reinterpret_cast<const RtColorRGB*>(v.cdata()),
+                                      v.size());
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Vector) {
+                params->SetVectorArray(
+                                       name,
+                                       reinterpret_cast<const RtVector3*>(v.cdata()),
+                                       v.size());
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Point) {
+                params->SetPointArray(
+                                      name,
+                                      reinterpret_cast<const RtPoint3*>(v.cdata()),
+                                      v.size());
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Normal) {
+                params->SetNormalArray(
+                                       name,
+                                       reinterpret_cast<const RtNormal3*>(v.cdata()),
+                                       v.size());
+                ok = true;
+            }
+        } else if (param.second.IsHolding<GfVec3d>()) {
+            const GfVec3d& v = param.second.UncheckedGet<GfVec3d>();
+            if (propType == SdrPropertyTypes->Color) {
+                params->SetColor(name, RtColorRGB(v[0], v[1], v[2]));
+                ok = true;
+            }
+        } else if (param.second.IsHolding<VtArray<GfVec3d>>()) {
+            if (propType == SdrPropertyTypes->Color) {
+                const VtArray<GfVec3d>& vd =
+                    param.second.UncheckedGet<VtArray<GfVec3d>>();
+                VtArray<GfVec3f> v = _ConvertToVec3fArray(vd);
+                params->SetColorArray(
+                                      name,
+                                      reinterpret_cast<const RtColorRGB*>(v.cdata()),
+                                      v.size());
+                ok = true;
+            }
+        } else if (param.second.IsHolding<float>()) {
+            float v = param.second.UncheckedGet<float>();
+            if (propType == SdrPropertyTypes->Int) {
+                params->SetInteger(name, int(v));
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Float) {
+                params->SetFloat(name, v);
+                ok = true;
+            }
+        } else if (param.second.IsHolding<VtArray<float>>()) {
+            const VtArray<float>& v =
+                param.second.UncheckedGet<VtArray<float>>();
+            if (propType == SdrPropertyTypes->Float) {
+                params->SetFloatArray(name, v.cdata(), v.size());
+                ok = true;
+            }
+        } else if (param.second.IsHolding<int>()) {
+            int v = param.second.UncheckedGet<int>();
+            if (propType == SdrPropertyTypes->Float) {
+                params->SetFloat(name, v);
+                ok = true;
+            } else if (propType == SdrPropertyTypes->Int) {
+                params->SetInteger(name, v);
+                ok = true;
+            }
+        } else if (param.second.IsHolding<TfToken>()) {
+            TfToken v = param.second.UncheckedGet<TfToken>();
+            params->SetString(name, RtUString(v.GetText()));
+            ok = true;
+        } else if (param.second.IsHolding<std::string>()) {
+            std::string v = param.second.UncheckedGet<std::string>();
+            params->SetString(name, RtUString(v.c_str()));
+            ok = true;
+        } else if (param.second.IsHolding<SdfAssetPath>()) {
+            SdfAssetPath p = param.second.Get<SdfAssetPath>();
+            std::string v = p.GetResolvedPath();
+            if (v.empty()) {
+                v = p.GetAssetPath();
+            }
+            params->SetString(name, RtUString(v.c_str()));
+            ok = true;
+        } else if (param.second.IsHolding<bool>()) {
+            // RixParamList (specifically, RixDataType) doesn't have
+            // a bool entry; we convert to integer instead.
+            int v = param.second.UncheckedGet<bool>();
+            params->SetInteger(name, v);
+            ok = true;
+        }
+        if (!ok) {
+            TF_DEBUG(HDPRMAN_MATERIALS)
+                .Msg("Unknown shading parameter type '%s'; skipping "
+                     "parameter '%s' on node '%s'; "
+                     "expected type '%s'\n",
+                     param.second.GetTypeName().c_str(),
+                     param.first.GetText(),
+                     nodePath.GetText(),
+                     propType.GetText());
+        }
+    }
+    // Convert connected inputs.
+    for (auto const& connEntry: node.inputConnections) {
+        for (auto const& e: connEntry.second) {
+            // Find the output & input shader nodes of the connection.
+            MatfiltNode const* upstreamNode =
+                TfMapLookupPtr(network.nodes, e.upstreamNode);
+            if (!upstreamNode) {
+                TF_WARN("Unknown upstream node %s", e.upstreamNode.GetText());
+                continue;
+            }
+            SdrShaderNodeConstPtr upstreamSdrEntry =
+                sdrRegistry.GetShaderNodeByIdentifier(
+                      upstreamNode->nodeTypeId, *_sourceTypes);
+            if (!upstreamSdrEntry) {
+                TF_WARN("Unknown shader for upstream node %s",
+                        e.upstreamNode.GetText());
+                continue;
+            }
             // Find the shader properties, so that we can look up
             // the property implementation names.
-            SdrShaderPropertyConstPtr outputProp =
-                outputShader->GetShaderInput(rel.outputName);
-            SdrShaderPropertyConstPtr inputProp =
-                inputShader->GetShaderOutput(rel.inputName);
-            if (!outputProp) {
-                TF_WARN("Unknown input '%s' on shader '%s' at '%s'; ignoring.",
-                        rel.outputName.GetText(),
-                        outputShader->GetName().c_str(),
-                        mat.nodes[i].path.GetText());
+            SdrShaderPropertyConstPtr downstreamProp =
+                sdrEntry->GetShaderInput(connEntry.first);
+            SdrShaderPropertyConstPtr upstreamProp =
+                upstreamSdrEntry->GetShaderOutput(e.upstreamOutputName);
+            if (!downstreamProp) {
+                TF_WARN("Unknown downstream property %s",
+                        connEntry.first.data());
                 continue;
             }
-            if (!inputProp) {
-                TF_WARN("Unknown shader output '%s' for "
-                        "shader '%s' at '%s'; ignoring.",
-                        rel.inputName.GetText(),
-                        inputShader->GetName().c_str(),
-                        mat.nodes[i].path.GetText());
+            if (!upstreamProp) {
+                TF_WARN("Unknown upstream property %s",
+                        e.upstreamOutputName.data());
                 continue;
             }
-
             // Prman syntax for parameter references is "handle:param".
-            RtUString name(outputProp->GetImplementationName().c_str());
+            RtUString name(downstreamProp->GetImplementationName().c_str());
             RtUString inputRef(
-                (rel.inputId.GetString()+":"
-                 + inputProp->GetImplementationName().c_str())
-                .c_str());
+                               (e.upstreamNode.GetString()+":"
+                                + upstreamProp->GetImplementationName().c_str())
+                               .c_str());
 
             // Establish the Riley connection.
-            TfToken propType = outputProp->GetType();
+            TfToken propType = downstreamProp->GetType();
             if (propType == SdrPropertyTypes->Color) {
                 params->ReferenceColor(name, inputRef);
             } else if (propType == SdrPropertyTypes->Vector) {
@@ -614,60 +437,114 @@ _MapHdNodesToRileyNodes(
                 TF_WARN("Unknown type '%s' for property '%s' "
                         "on shader '%s' at %s; ignoring.",
                         propType.GetText(),
-                        rel.outputName.GetText(),
-                        shaders[i]->GetName().c_str(),
-                        mat.nodes[i].path.GetText());
+                        connEntry.first.data(),
+                        sdrEntry->GetName().c_str(),
+                        nodePath.GetText());
             }
         }
     }
+    return true;
 }
     
 // Debug helper
 void
-HdPrman_DumpMat(std::string const& label,
-                SdfPath const& id, HdMaterialNetwork const& mat)
+HdPrman_DumpNetwork(MatfiltNetwork const& network, SdfPath const& id)
 {
-    printf("%s material network for %s:\n", label.c_str(), id.GetText());
-    for (HdMaterialNode const& node: mat.nodes) {
+    printf("material network for %s:\n", id.GetText());
+    for (auto const& nodeEntry: network.nodes) {
         printf("  --Node--\n");
-        printf("    %s\n", node.path.GetText());
-        printf("    %s\n", node.identifier.GetText());
-        for (auto const& entry: node.parameters) {
-            printf("\tparam %s: %s\n", entry.first.GetText(),
-                   TfStringify(entry.second).c_str());
+        printf("    path: %s\n", nodeEntry.first.GetText());
+        printf("    type: %s\n", nodeEntry.second.nodeTypeId.GetText());
+        for (auto const& paramEntry: nodeEntry.second.parameters) {
+            printf("    param: %s = %s\n",
+                   paramEntry.first.GetText(),
+                   TfStringify(paramEntry.second).c_str());
         }
-    }
-    if (!mat.relationships.empty()) {
-        printf("  --Connections--\n");
-        for (HdMaterialRelationship const& rel: mat.relationships) {
-            printf("    %s.%s -> %s.%s\n",
-                rel.outputId.GetText(),
-                rel.outputName.GetText(),
-                rel.inputId.GetText(),
-                rel.inputName.GetText());
-        }
-    }
-    if (!mat.primvars.empty()) {
-        printf("  --Primvars--\n");
-        for (TfToken const& primvar: mat.primvars) {
-            printf("    %s\n", primvar.GetText());
+        for (auto const& connEntry: nodeEntry.second.inputConnections) {
+            for (auto const& e: connEntry.second) {
+                printf("    connection: %s <-> %s @ %s\n",
+                       connEntry.first.GetText(),
+                       e.upstreamOutputName.GetText(),
+                       e.upstreamNode.GetText());
         }
     }
 }
+    printf("  --Terminals--\n");
+    for (auto const& terminalEntry: network.terminals) {
+        printf("    %s (downstream) <-> %s @ %s (upstream)\n",
+               terminalEntry.first.GetText(),
+               terminalEntry.second.upstreamOutputName.GetText(),
+               terminalEntry.second.upstreamNode.GetText());
+    }
+}
     
-// Convert an HdMaterialNetwork to a Riley shading network.
-static bool
-_ConvertHdMaterialToRman(
-    RixRileyManager *mgr,
-    const HdMaterialNetwork &sourceMaterialNetwork,
-    std::vector<riley::ShadingNode> *result)
+// Convert given Matfilt network to Riley material and displacement
+// shader networks. If the Riley network exists, it will be modified;
+// otherwise it will be created as needed.
+static void
+_ConvertMatfiltNetworkToRman(
+    HdPrman_Context *context,
+    SdfPath const& id,
+    const MatfiltNetwork &network,
+    riley::MaterialId *materialId,
+    riley::DisplacementId *displacementId)
 {
-    HdMaterialNetwork mat = sourceMaterialNetwork;
-    std::vector<SdrShaderNodeConstPtr> shaders;
-    _FindShaders(mat.nodes, &shaders);
-    _ExpandVstructs(&mat, shaders);
-    _MapHdNodesToRileyNodes(mgr, mat, shaders, result);
-    return true;
+    HD_TRACE_FUNCTION();
+    RixRileyManager *mgr = context->mgr;
+    riley::Riley *riley = context->riley;
+    std::vector<riley::ShadingNode> nodes;
+    nodes.reserve(network.nodes.size());
+    bool materialFound = false, displacementFound = false;
+    for (auto const& terminal: network.terminals) {
+        if (_ConvertNodes(mgr, network, terminal.second.upstreamNode, &nodes)) {
+            if (terminal.first == HdMaterialTerminalTokens->surface ||
+                terminal.first == HdMaterialTerminalTokens->volume) {
+                // Create or modify Riley material.
+                materialFound = true;
+                if (*materialId == riley::MaterialId::k_InvalidId) {
+                    *materialId = riley->CreateMaterial(&nodes[0],
+                                                        nodes.size());
+                } else {
+                    riley->ModifyMaterial(*materialId, &nodes[0], nodes.size());
+                }
+                if (*materialId == riley::MaterialId::k_InvalidId) {
+                    TF_RUNTIME_ERROR("Failed to create material %s\n",
+                                     id.GetText());
+                }
+            } else if (terminal.first ==
+                       HdMaterialTerminalTokens->displacement) {
+                // Create or modify Riley displacement.
+                displacementFound = true;
+                if (*displacementId == riley::DisplacementId::k_InvalidId) {
+                    *displacementId = riley->CreateDisplacement(&nodes[0],
+                                                                nodes.size());
+                } else {
+                    riley->ModifyDisplacement(*displacementId, &nodes[0],
+                                              nodes.size());
+                }
+                if (*displacementId == riley::DisplacementId::k_InvalidId) {
+                    TF_RUNTIME_ERROR("Failed to create displacement %s\n",
+                                     id.GetText());
+                }
+            }
+        } else {
+            TF_RUNTIME_ERROR("Failed to convert nodes for %s\n", id.GetText());
+        }
+        // Free node param storage.
+        for (const auto &node: nodes) {
+            mgr->DestroyRixParamList(const_cast<RixParamList*>(node.params));
+        }
+        nodes.clear();
+    }
+    // Free dis-used networks.
+    if (!materialFound) {
+        riley->DeleteMaterial(*materialId);
+        *materialId = riley::MaterialId::k_InvalidId;
+    }
+    if (!displacementFound) {
+        riley->DeleteDisplacement(*displacementId);
+        *displacementId = riley::DisplacementId::k_InvalidId;
+    }
 }
 
 /* virtual */
@@ -676,95 +553,44 @@ HdPrmanMaterial::Sync(HdSceneDelegate *sceneDelegate,
                       HdRenderParam   *renderParam,
                       HdDirtyBits     *dirtyBits)
 {  
+    HD_TRACE_FUNCTION();
     HdPrman_Context *context =
         static_cast<HdPrman_RenderParam*>(renderParam)->AcquireContext();
 
     SdfPath id = GetId();
 
-    RixRileyManager *mgr = context->mgr;
-    riley::Riley *riley = context->riley;
-
     if ((*dirtyBits & HdMaterial::DirtyResource) ||
         (*dirtyBits & HdMaterial::DirtyParams)) {
-        VtValue vtMat = sceneDelegate->GetMaterialResource(id);
-        if (vtMat.IsHolding<HdMaterialNetworkMap>()) {
-            HdMaterialNetworkMap networkMap =
-                vtMat.UncheckedGet<HdMaterialNetworkMap>();
-
-            HdPrman_ConvertUsdPreviewMaterial(&networkMap);
-            _ApplyStudioFixes(&networkMap);
-
-            HdMaterialNetwork bxdfNet, dispNet;
-            TfMapLookup(networkMap.map, _tokens->bxdf, &bxdfNet);
-            TfMapLookup(networkMap.map, _tokens->displacement, &dispNet);
-
+        VtValue hdMatVal = sceneDelegate->GetMaterialResource(id);
+        if (hdMatVal.IsHolding<HdMaterialNetworkMap>()) {
+            // Convert Hd material to Matfilt network form.
+            MatfiltNetwork matfiltNetwork;
+            MatfiltConvertFromHdMaterialNetworkMap(
+                hdMatVal.UncheckedGet<HdMaterialNetworkMap>(), &matfiltNetwork);
+            // Apply material filter chain to the network.
+            if (!_filterChain->empty()) {
+                std::vector<std::string> errors;
+                MatfiltExecFilterChain(*_filterChain, id, matfiltNetwork, {},
+                                           *_sourceTypes, &errors);
+                if (!errors.empty()) {
+                    TF_RUNTIME_ERROR("HdPrmanMaterial: %s\n",
+                        TfStringJoin(errors).c_str());
+                    // Policy choice: Attempt to use the material, regardless.
+                }
+            }
             if (TfDebug::IsEnabled(HDPRMAN_MATERIALS)) {
-                if (!bxdfNet.nodes.empty()) {
-                    HdPrman_DumpMat("BXDF", id, bxdfNet);
+                HdPrman_DumpNetwork(matfiltNetwork, id);
                 }
-                if (!dispNet.nodes.empty()) {
-                    HdPrman_DumpMat("Displacement", id, dispNet);
-                }
-            }
-
-            std::vector<riley::ShadingNode> nodes;
-
-            // Bxdf
-            if (_ConvertHdMaterialToRman(mgr, bxdfNet, &nodes)) {
-                if (_materialId == riley::MaterialId::k_InvalidId) {
-                    _materialId = riley->CreateMaterial(&nodes[0],
-                                                        nodes.size());
-                } else {
-                    riley->ModifyMaterial(_materialId, &nodes[0], nodes.size());
-                }
-            } else {
-                // Clear out any previous material.
-                // _ConvertHdMaterialToRman will have already emitted
-                // any appropriate diagnostics on failure.
-                if (_materialId != riley::MaterialId::k_InvalidId) {
-                    riley->DeleteMaterial(_materialId);
-                    _materialId = riley::MaterialId::k_InvalidId;
-                }
-            }
-            for (const auto &node: nodes) {
-                mgr->DestroyRixParamList(
-                    const_cast<RixParamList*>(node.params));
-            }
-
-            // Displacement
-            nodes.clear();
-            if (_ConvertHdMaterialToRman(mgr, dispNet, &nodes)) {
-                if (_displacementId == riley::DisplacementId::k_InvalidId) {
-                    _displacementId = riley->CreateDisplacement(&nodes[0],
-                                                                nodes.size());
-                } else {
-                    riley->ModifyDisplacement(_displacementId, &nodes[0],
-                                              nodes.size());
-                }
-            } else {
-                // Clear out any previous displacement.
-                // _ConvertHdMaterialToRman will have already emitted
-                // any appropriate diagnostics on failure.
-                if (_displacementId != riley::DisplacementId::k_InvalidId) {
-                    riley->DeleteDisplacement(_displacementId);
-                    _displacementId = riley::DisplacementId::k_InvalidId;
-                }
-            }
-            for (const auto &node: nodes) {
-                mgr->DestroyRixParamList(
-                    const_cast<RixParamList*>(node.params));
-            }
-            nodes.clear();
-
+            _ConvertMatfiltNetworkToRman(context, id, matfiltNetwork,
+                                         &_materialId, &_displacementId);
         } else {
             TF_WARN("HdPrmanMaterial: Expected material resource "
                     "for <%s> to contain HdMaterialNodes, but "
                     "found %s instead.",
-                    id.GetText(), vtMat.GetTypeName().c_str());
+                    id.GetText(), hdMatVal.GetTypeName().c_str());
             _ResetMaterial(context);
         }
     }
-
     *dirtyBits = HdChangeTracker::Clean;
 }
 

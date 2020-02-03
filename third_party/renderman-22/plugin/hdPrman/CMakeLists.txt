@@ -20,20 +20,27 @@ pxr_shared_library(${PXR_PACKAGE}
         gf
         hd
         usdRi
-        ${RENDERMAN_LIBRARY}
+        ${LOADPRMAN_LIBRARY}
 
     INCLUDE_DIRS
         ${RENDERMAN_INCLUDE_DIR}
 
     PUBLIC_CLASSES
+        basisCurves
+        camera
         context
-        convertPreviewMaterial
         coordSys
         debugCodes
-        basisCurves
+        gprim
         instancer
         light
+        lightFilter
+        lightFilterUtils
         material
+        matfiltConversions
+        matfiltConvertPreviewMaterial
+        matfiltFilterChain
+        matfiltResolveVstructs
         mesh
         points
         renderDelegate
@@ -44,6 +51,13 @@ pxr_shared_library(${PXR_PACKAGE}
     PUBLIC_HEADERS
         api.h
         renderParam.h
+
+    PRIVATE_HEADERS
+        virtualStructConditionalGrammar.tab.h
+
+    CPPFILES
+        virtualStructConditionalGrammar.tab.cpp
+        virtualStructConditionalGrammar.lex.cpp
 
     DISABLE_PRECOMPILED_HEADERS
 )
@@ -64,11 +78,13 @@ if(WIN32 AND NOT BUILD_SHARED_LIBS)
 else()
     pxr_build_test(testHdPrman
         LIBRARIES
+            cameraUtil
             hdPrman
             hd
             usd
             usdImaging
-            ${RENDERMAN_LIBRARY}
+            usdRender
+            ${LOADPRMAN_LIBRARY}
         CPPFILES
             testenv/testHdPrman.cpp
     )

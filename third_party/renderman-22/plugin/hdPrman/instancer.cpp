@@ -23,6 +23,7 @@
 //
 #include "hdPrman/instancer.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
+#include "pxr/imaging/hd/tokens.h"
 
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
@@ -38,16 +39,6 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-// Define local tokens for the names of the primvars the instancer
-// consumes.
-// XXX: These should be hydra tokens...
-TF_DEFINE_PRIVATE_TOKENS(
-    _tokens,
-    (instanceTransform)
-    (rotate)
-    (scale)
-    (translate)
-);
 
 HdPrmanInstancer::HdPrmanInstancer(HdSceneDelegate* delegate,
                                      SdfPath const& id,
@@ -124,9 +115,9 @@ HdPrmanInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     }
 
     // "translate" holds a translation vector for each index.
-    if (_primvarMap.count(_tokens->translate) > 0) {
+    if (_primvarMap.count(HdInstancerTokens->translate) > 0) {
         const VtVec3fArray translates =
-            _primvarMap[_tokens->translate].value.Get<VtVec3fArray>();
+            _primvarMap[HdInstancerTokens->translate].value.Get<VtVec3fArray>();
         for (int i: instanceIndices) {
             GfMatrix4d translateMat(1);
             translateMat.SetTranslate(GfVec3d(translates[i]));
@@ -135,9 +126,9 @@ HdPrmanInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     }
 
     // "rotate" holds a quaternion in <real, i, j, k> format for each index.
-    if (_primvarMap.count(_tokens->rotate) > 0) {
+    if (_primvarMap.count(HdInstancerTokens->rotate) > 0) {
         const VtVec4fArray rotates =
-            _primvarMap[_tokens->rotate].value.Get<VtVec4fArray>();
+            _primvarMap[HdInstancerTokens->rotate].value.Get<VtVec4fArray>();
         for (int i: instanceIndices) {
             GfQuaternion quat(rotates[i][0],
                 GfVec3d(rotates[i][1], rotates[i][2], rotates[i][3]));
@@ -148,9 +139,9 @@ HdPrmanInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     }
 
     // "scale" holds an axis-aligned scale vector for each index.
-    if (_primvarMap.count(_tokens->scale) > 0) {
+    if (_primvarMap.count(HdInstancerTokens->scale) > 0) {
         const VtVec3fArray scales =
-            _primvarMap[_tokens->scale].value.Get<VtVec3fArray>();
+            _primvarMap[HdInstancerTokens->scale].value.Get<VtVec3fArray>();
         for (int i: instanceIndices) {
             GfMatrix4d scaleMat(1);
             scaleMat.SetScale(GfVec3d(scales[i]));
@@ -159,9 +150,9 @@ HdPrmanInstancer::ComputeInstanceTransforms(SdfPath const &prototypeId)
     }
 
     // "instanceTransform" holds a 4x4 transform matrix for each index.
-    if (_primvarMap.count(_tokens->instanceTransform) > 0) {
+    if (_primvarMap.count(HdInstancerTokens->instanceTransform) > 0) {
         const VtMatrix4dArray instanceTransforms =
-            _primvarMap[_tokens->instanceTransform]
+            _primvarMap[HdInstancerTokens->instanceTransform]
             .value.Get<VtMatrix4dArray>();
         for (int i: instanceIndices) {
             transforms[i] = instanceTransforms[i] * transforms[i];
@@ -204,12 +195,9 @@ static void
 _AccumulateSampleTimes(HdTimeSampleArray<T1,C> const& in,
                        HdTimeSampleArray<T2,C> *out)
 {
-    size_t cappedNumSamplesIn = std::min(in.count, C);
-    if (cappedNumSamplesIn > out->count) {
-        out->count = cappedNumSamplesIn;
-        for (size_t i=0; i < cappedNumSamplesIn; ++i) {
-            out->times[i] = in.times[i];
-        }
+    if (in.count > out->count) {
+        out->Resize(in.count);
+        out->times = in.times;
     }
 }
 
@@ -232,11 +220,14 @@ HdPrmanInstancer::SampleInstanceTransforms(
     HdTimeSampleArray<VtValue, HDPRMAN_MAX_TIME_SAMPLES> boxedRotates;
     HdTimeSampleArray<VtValue, HDPRMAN_MAX_TIME_SAMPLES> boxedScales;
     delegate->SampleInstancerTransform(instancerId, &instancerXform);
-    delegate->SamplePrimvar(instancerId, _tokens->instanceTransform,
+    delegate->SamplePrimvar(instancerId, HdInstancerTokens->instanceTransform,
                             &boxedInstanceXforms);
-    delegate->SamplePrimvar(instancerId, _tokens->translate, &boxedTranslates);
-    delegate->SamplePrimvar(instancerId, _tokens->scale, &boxedScales);
-    delegate->SamplePrimvar(instancerId, _tokens->rotate, &boxedRotates);
+    delegate->SamplePrimvar(instancerId, HdInstancerTokens->translate,
+                            &boxedTranslates);
+    delegate->SamplePrimvar(instancerId, HdInstancerTokens->scale,
+                            &boxedScales);
+    delegate->SamplePrimvar(instancerId, HdInstancerTokens->rotate,
+                            &boxedRotates);
 
     // Unbox samples held as VtValues
     HdTimeSampleArray<VtMatrix4dArray, HDPRMAN_MAX_TIME_SAMPLES> instanceXforms;
@@ -251,13 +242,12 @@ HdPrmanInstancer::SampleInstanceTransforms(
     // As a simple resampling strategy, find the input with the max #
     // of samples and use its sample placement.  In practice we expect
     // them to all be the same, i.e. to not require resampling.
-    sa->count = 0;
+    sa->Resize(0);
     _AccumulateSampleTimes(instancerXform, sa);
     _AccumulateSampleTimes(instanceXforms, sa);
     _AccumulateSampleTimes(translates, sa);
     _AccumulateSampleTimes(scales, sa);
     _AccumulateSampleTimes(rotates, sa);
-    TF_VERIFY(sa->count <= sa->capacity);
 
     // Resample inputs and concatenate transformations.
     //
@@ -289,27 +279,28 @@ HdPrmanInstancer::SampleInstanceTransforms(
         }
 
         // Concatenate transformations and filter to just the instanceIndices.
-        sa->values[i].resize(instanceIndices.size());
+        VtMatrix4dArray &ma = sa->values[i];
+        ma.resize(instanceIndices.size());
         for (size_t j=0; j < instanceIndices.size(); ++j) {
-            sa->values[i][j] = xf;
+            ma[j] = xf;
             size_t instanceIndex = instanceIndices[j];
             if (trans.size() > instanceIndex) {
                 GfMatrix4d t(1);
                 t.SetTranslate(GfVec3d(trans[instanceIndex]));
-                sa->values[i][j] = t * sa->values[i][j];
+                ma[j] = t * ma[j];
             }
             if (rot.size() > instanceIndex) {
                 GfMatrix4d r(1);
                 r.SetRotate(GfRotation(rot[instanceIndex]));
-                sa->values[i][j] = r * sa->values[i][j];
+                ma[j] = r * ma[j];
             }
             if (scale.size() > instanceIndex) {
                 GfMatrix4d s(1);
                 s.SetScale(GfVec3d(scale[instanceIndex]));
-                sa->values[i][j] = s * sa->values[i][j];
+                ma[j] = s * ma[j];
             }
             if (ixf.size() > instanceIndex) {
-                sa->values[i][j] = ixf[instanceIndex] * sa->values[i][j];
+                ma[j] = ixf[instanceIndex] * ma[j];
             }
         }
     }
@@ -319,6 +310,7 @@ HdPrmanInstancer::SampleInstanceTransforms(
     if (GetParentId().IsEmpty()) {
         return;
     }
+
     HdInstancer *parentInstancer =
         GetDelegate()->GetRenderIndex().GetInstancer(GetParentId());
     if (!TF_VERIFY(parentInstancer)) {
@@ -343,12 +335,7 @@ HdPrmanInstancer::SampleInstanceTransforms(
         return;
     }
     // Move aside previously computed child xform samples to childXf.
-    HdTimeSampleArray<VtMatrix4dArray, HDPRMAN_MAX_TIME_SAMPLES> childXf;
-    childXf.count = sa->count;
-    for (size_t i=0; i < sa->count; ++i) {
-        childXf.times[i] = sa->times[i];
-        childXf.values[i] = sa->values[i];
-    }
+    HdTimeSampleArray<VtMatrix4dArray, HDPRMAN_MAX_TIME_SAMPLES> childXf(*sa);
     // Merge sample times, taking the densest sampling.
     _AccumulateSampleTimes(parentXf, sa);
     // Apply parent xforms to the children.
@@ -382,10 +369,10 @@ HdPrmanInstancer::GetInstancePrimvars(
             continue;
         }
         // Skip primvars that have special handling elsewhere.
-        if (entry.first == _tokens->instanceTransform ||
-            entry.first == _tokens->rotate ||
-            entry.first == _tokens->scale ||
-            entry.first == _tokens->translate) {
+        if (entry.first == HdInstancerTokens->instanceTransform ||
+            entry.first == HdInstancerTokens->rotate ||
+            entry.first == HdInstancerTokens->scale ||
+            entry.first == HdInstancerTokens->translate) {
             continue;
         }
         // Confirm that instance-rate primvars are array-valued
@@ -419,17 +406,17 @@ HdPrmanInstancer::GetInstancePrimvars(
         }
 
         if (val.IsHolding<VtArray<float>>()) {
-            VtArray<float> v = val.UncheckedGet<VtArray<float>>();
+            const VtArray<float>& v = val.UncheckedGet<VtArray<float>>();
             attrs->SetFloat(name, v[instanceIndex]);
         } else if (val.IsHolding<VtArray<int>>()) {
-            VtArray<int> v = val.UncheckedGet<VtArray<int>>();
+            const VtArray<int>& v = val.UncheckedGet<VtArray<int>>();
             attrs->SetInteger(name, v[instanceIndex]);
         } else if (val.IsHolding<VtArray<GfVec2f>>()) {
-            VtArray<GfVec2f> v = val.UncheckedGet<VtArray<GfVec2f>>();
+            const VtArray<GfVec2f>& v = val.UncheckedGet<VtArray<GfVec2f>>();
             attrs->SetFloatArray(
                 name, reinterpret_cast<const float*>(v.cdata()), 2);
         } else if (val.IsHolding<VtArray<GfVec3f>>()) {
-            GfVec3f v =
+            const GfVec3f& v =
                 val.UncheckedGet<VtArray<GfVec3f>>()[instanceIndex];
             if (primvar.role == HdPrimvarRoleTokens->color) {
                 attrs->SetColor(name, RtColorRGB(v[0], v[1], v[2]));
@@ -441,18 +428,20 @@ HdPrmanInstancer::GetInstancePrimvars(
                 attrs->SetVector(name, RtVector3(v[0], v[1], v[2]));
             }
         } else if (val.IsHolding<VtArray<GfVec4f>>()) {
-            VtArray<GfVec4f> v = val.UncheckedGet<VtArray<GfVec4f>>();
+            const VtArray<GfVec4f>& v = val.UncheckedGet<VtArray<GfVec4f>>();
             attrs->SetFloatArray(
                 name, reinterpret_cast<const float*>(v.cdata()), 4);
         } else if (val.IsHolding<VtArray<GfMatrix4d>>()) {
-            VtArray<GfMatrix4d> v = val.UncheckedGet<VtArray<GfMatrix4d>>();
+            const VtArray<GfMatrix4d>& v =
+                val.UncheckedGet<VtArray<GfMatrix4d>>();
             attrs->SetMatrix(name,
                 HdPrman_GfMatrixToRtMatrix(v[instanceIndex]));
         } else if (val.IsHolding<VtArray<std::string>>()) {
-            VtArray<std::string> v = val.UncheckedGet<VtArray<std::string>>();
+            const VtArray<std::string>& v =
+                val.UncheckedGet<VtArray<std::string>>();
             attrs->SetString(name, RtUString(v[instanceIndex].c_str()));
         } else if (val.IsHolding<VtArray<TfToken>>()) {
-            VtArray<TfToken> v = val.UncheckedGet<VtArray<TfToken>>();
+            const VtArray<TfToken>& v = val.UncheckedGet<VtArray<TfToken>>();
             attrs->SetString(name, RtUString(v[instanceIndex].GetText()));
         }
     }

@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDXPRMAN_RENDER_DELEGATE_H
-#define HDXPRMAN_RENDER_DELEGATE_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_DELEGATE_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_DELEGATE_H
 
 #include "pxr/pxr.h"
 #include "hdPrman/renderDelegate.h"
@@ -56,6 +56,15 @@ public:
     virtual HdAovDescriptor GetDefaultAovDescriptor(
                                 TfToken const& name) const override;
 
+    /// Return true to indicate that pausing and resuming are supported.
+    virtual bool IsPauseSupported() const override;
+
+    /// Pause background rendering threads.
+    virtual bool Pause() override;
+
+    /// Resume background rendering threads.
+    virtual bool Resume() override;
+
 private:
     // This class does not support copying.
     HdxPrmanRenderDelegate(const HdxPrmanRenderDelegate &)             = delete;
@@ -70,4 +79,4 @@ private: // data
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDXPRMAN_RENDER_DELEGATE_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_DELEGATE_H

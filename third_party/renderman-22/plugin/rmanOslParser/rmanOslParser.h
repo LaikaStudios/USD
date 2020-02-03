@@ -22,8 +22,8 @@
 // language governing permissions and limitations under the Apache License.
 //
 
-#ifndef RMAN_OSL_PARSERPLUGIN_H
-#define RMAN_OSL_PARSERPLUGIN_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_RMAN_OSL_PARSER_RMAN_OSL_PARSER_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_RMAN_OSL_PARSER_RMAN_OSL_PARSER_H
 
 /// \file rmanOslParser/rmanOslParser.h
 
@@ -140,13 +140,15 @@ private:
 
     // Gets a common type + array size (if array) from the OSL parameter
     std::tuple<TfToken, size_t> _getTypeName(
-        const RixShaderParameter* param) const;
+        const RixShaderParameter* param,
+        const NdrTokenMap& metadata) const;
 
     // Gets the default value of the specified param.
     VtValue _getDefaultValue(
         const RixShaderParameter* param,
         const std::string& oslType,
-        bool isArray
+        size_t arraySize,
+        const NdrTokenMap& metadata
     ) const;
 
 private:
@@ -156,4 +158,4 @@ private:
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // RMAN_OSL_PARSERPLUGIN_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_RMAN_OSL_PARSER_RMAN_OSL_PARSER_H

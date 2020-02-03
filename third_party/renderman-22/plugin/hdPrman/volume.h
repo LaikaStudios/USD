@@ -21,10 +21,11 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_VOLUME_H
-#define HDPRMAN_VOLUME_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_VOLUME_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_VOLUME_H
 
 #include "pxr/pxr.h"
+#include "hdPrman/gprim.h"
 #include "pxr/imaging/hd/field.h"
 #include "pxr/imaging/hd/volume.h"
 #include "pxr/imaging/hd/enums.h"
@@ -47,35 +48,30 @@ private:
     TfToken const _typeId;
 };
 
-class HdPrman_Volume final : public HdVolume {
+class HdPrman_Volume final : public HdPrman_Gprim<HdVolume> {
+public:
+    typedef HdPrman_Gprim<HdVolume> BASE;
 public:
     HF_MALLOC_TAG_NEW("new HdPrman_Volume");
-
     HdPrman_Volume(SdfPath const& id,
                 SdfPath const& instancerId = SdfPath());
-    virtual ~HdPrman_Volume() = default;
-
     virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
-    virtual void Finalize(HdRenderParam *renderParam) override;
-    virtual void Sync(HdSceneDelegate* sceneDelegate,
-                      HdRenderParam*   renderParam,
-                      HdDirtyBits*     dirtyBits,
-                      TfToken const    &reprToken) override;
-
 protected:
-    virtual HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
-    virtual void _InitRepr(TfToken const &reprToken,
-                           HdDirtyBits *dirtyBits) override;
+    virtual void
+    _ConvertGeometry(HdPrman_Context *context,
+                      RixRileyManager *mgr,
+                      HdSceneDelegate *sceneDelegate,
+                      const SdfPath &id,
+                      RtUString *primType,
+                      std::vector<HdGeomSubset> *geomSubsets,
+                      RixParamList* &primvars) override;
 
-private:
-    riley::GeometryMasterId _masterId;
-    riley::GeometryInstanceId _instanceId;
-
-    // This class does not support copying.
-    HdPrman_Volume(const HdPrman_Volume&)             = delete;
-    HdPrman_Volume &operator =(const HdPrman_Volume&) = delete;
+    virtual riley::MaterialId
+    _GetFallbackMaterial(HdPrman_Context *context) override {
+        return context->fallbackVolumeMaterial;
+    }
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_VOLUME_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_VOLUME_H

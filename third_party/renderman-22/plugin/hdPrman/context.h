@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_CONTEXT_H
-#define HDPRMAN_CONTEXT_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_CONTEXT_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_CONTEXT_H
 
 #include "pxr/pxr.h"
 #include "hdPrman/api.h"
@@ -42,7 +42,7 @@
 // calls by using fixed-size stack arrays with configured capacity.
 // The capacity is indicated to the scene delegate when requesting
 // time samples.
-#define HDPRMAN_MAX_TIME_SAMPLES 2
+#define HDPRMAN_MAX_TIME_SAMPLES 4
 
 class RixRiCtl;
 class RixParamList;
@@ -51,9 +51,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class SdfPath;
 class HdSceneDelegate;
-
-/// Hierarchical map of scene ids to sample times.
-typedef std::map<SdfPath, std::vector<float>> HdPrman_TimeSampleMap;
 
 // Context for HdPrman to communicate with an instance of PRMan.
 struct HdPrman_Context
@@ -72,17 +69,9 @@ struct HdPrman_Context
     // does not have a bound material.
     riley::MaterialId fallbackMaterial;
     riley::MaterialId fallbackVolumeMaterial;
-    // The fallback set of time samples to evalate,
-    // if there is not a relevant entry in timeSampleMap.
-    std::vector<float> defaultTimeSamples;
-    // Per-scope configuration of time samples to evaluate.
-    HdPrman_TimeSampleMap timeSampleMap;
-
-    // A helper to look up the set of time samples to evalutae
-    // for the given Hydra id.
-    const std::vector<float>& GetTimeSamplesForId(SdfPath const&);
 
     // Convert any Hydra primvars that should be Riley instance attributes.
+    HDPRMAN_API
     RixParamList*
     ConvertAttributes(HdSceneDelegate *sceneDelegate, SdfPath const& id);
 
@@ -95,6 +84,7 @@ struct HdPrman_Context
     /// into a Riley equivalent form.  Retain the result internally
     /// in a cache, so that we may re-use the result with other
     /// rprims with the same set of bindings.
+    HDPRMAN_API
     RileyCoordSysIdVecRefPtr
     ConvertAndRetainCoordSysBindings(
         HdSceneDelegate *sceneDelegate,
@@ -102,6 +92,7 @@ struct HdPrman_Context
 
     /// Convert a list of categories returned by Hydra to
     /// equivalent Prman grouping attributes.
+    HDPRMAN_API
     void
     ConvertCategoriesToAttributes(SdfPath const& id,
                                   VtArray<TfToken> const& categories,
@@ -109,11 +100,26 @@ struct HdPrman_Context
 
     /// Release any coordinate system bindings cached for the given
     /// rprim id.
+    HDPRMAN_API
     void ReleaseCoordSysBindings(SdfPath const& id);
 
+    HDPRMAN_API
     void IncrementLightLinkCount(TfToken const& name);
+
+    HDPRMAN_API
     void DecrementLightLinkCount(TfToken const& name);
+
+    HDPRMAN_API
     bool IsLightLinkUsed(TfToken const& name);
+
+    HDPRMAN_API
+    void IncrementLightFilterCount(TfToken const& name);
+
+    HDPRMAN_API
+    void DecrementLightFilterCount(TfToken const& name);
+
+    HDPRMAN_API
+    bool IsLightFilterUsed(TfToken const& name);
 
     virtual ~HdPrman_Context() = default;
 
@@ -126,6 +132,11 @@ private:
 
     // Mutex protecting lightLinkRefs.
     std::mutex _lightLinkMutex;
+
+    std::unordered_map<TfToken, size_t, TfToken::HashFunctor> _lightFilterRefs;
+
+    // Mutex protecting lightFilterRefs.
+    std::mutex _lightFilterMutex;
 
     // Map from Hydra coordinate system vector pointer to Riley equivalent.
     typedef std::unordered_map<
@@ -192,4 +203,4 @@ HdPrman_UpdateSearchPathsFromEnvironment(RixParamList *options);
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_CONTEXT_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_CONTEXT_H

@@ -34,6 +34,7 @@
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/modelAPI.h"
 #include "pxr/usd/usd/primRange.h"
+#include "pxr/usd/usd/variantSets.h"
 #include "pxr/usd/usdGeom/bboxCache.h"
 #include "pxr/usd/usdGeom/metrics.h"
 #include "pxr/usd/usdGeom/modelAPI.h"
@@ -41,6 +42,7 @@
 #include "pxr/usd/usdGeom/scope.h"
 #include "pxr/usd/usdGeom/xform.h"
 #include "pxr/usd/usdGeom/xformCache.h"
+#include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdUtils/pipeline.h"
 #include "pxr/usd/kind/registry.h"
 #include "pxr/usd/sdf/fileFormat.h"
@@ -80,8 +82,6 @@
 #include "gusd/UT_Version.h"
 #include "gusd/context.h"
 #include "gusd/xformWrapper.h"
-
-#include "boost/foreach.hpp"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -974,6 +974,13 @@ openStage(fpreal tstart, int startTimeCode, int endTimeCode)
         // Set m_usdStage's EditTarget to be its SessionLayer.
         m_usdStage->SetEditTarget(m_usdStage->GetSessionLayer());
 
+        // Set modelingVariant to ALL_VARIANTS per pipeline convention.
+        // For some models, this will activate scopes that we might need to
+        // be present to properly export overlay data. 
+        GusdUSD_Utils::SetModelingVariant(m_usdStage,
+            m_usdStage->GetDefaultPrim(),
+            GusdUSD_Utils::kAllVariantsToken);
+
         // If given model path and asset name detail attributes, we set up an
         // edit target to remap the output of the overlay to the specfied
         // model's scope. For exmaple, uutput would be /model/geom/... instead
@@ -1152,6 +1159,10 @@ closeStage(fpreal tend)
 
     bool overlay = evalInt("overlay", 0, tend);
     if (overlay) {
+        // clear out the modelingVariant selection made during openStage().
+        GusdUSD_Utils::ClearModelingVariant(m_usdStage,
+            m_usdStage->GetDefaultPrim());
+
         m_usdStage->GetSessionLayer()->Export(usdFile.toStdString());
 
         // Now that the SessionLayer has been exported into a file,
@@ -1357,8 +1368,7 @@ setKind( const string &path, UsdStagePtr stage )
     if( model && !model.GetKind( &kind )) {
 
         bool hasModelChildren = false;
-        BOOST_FOREACH( UsdPrim child, p.GetChildren()) {
-
+        for( const auto& child : p.GetChildren() ) {
             TfToken childKind;
             UsdModelAPI( child ).GetKind( &childKind );
             if( KindRegistry::IsA( childKind, KindTokens->model )) {
@@ -1724,7 +1734,7 @@ renderFrame(fpreal time,
                     // appearing on the start frame.
                     if ( m_granularity == ONE_FILE ) {
                         if ( !SYSisEqual(sampleFrame, m_startFrame + shutterOpen, 1e-6) ) {
-                            primPtr->addLeadingBookend( sampleFrame, m_startFrame );
+                            primPtr->addLeadingBookend( sampleFrame );
                         }
                     }
                     primPtr->markVisible( true );
@@ -2059,7 +2069,7 @@ bindAndWriteShaders(UsdRefShaderMap& usdRefShaderMap,
             for (auto primPathIt = primPaths.begin();
                  primPathIt != primPaths.end(); ++primPathIt) {
                 UsdPrim prim = m_usdStage->GetPrimAtPath(*primPathIt);
-                usdMaterial.Bind(prim);
+                UsdShadeMaterialBindingAPI(prim).Bind(usdMaterial);
             }
         }
     }

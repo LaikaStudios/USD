@@ -21,10 +21,11 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_POINTS_H
-#define HDPRMAN_POINTS_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_POINTS_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_POINTS_H
 
 #include "pxr/pxr.h"
+#include "hdPrman/gprim.h"
 #include "pxr/imaging/hd/points.h"
 #include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/vertexAdjacency.h"
@@ -34,34 +35,24 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-class HdPrman_Points final : public HdPoints {
+class HdPrman_Points final : public HdPrman_Gprim<HdPoints> {
 public:
+    typedef HdPrman_Gprim<HdPoints> BASE;
     HF_MALLOC_TAG_NEW("new HdPrman_Points");
-
     HdPrman_Points(SdfPath const& id,
-                SdfPath const& instancerId = SdfPath());
-    virtual ~HdPrman_Points() = default;
-
+                   SdfPath const& instancerId = SdfPath());
     virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
-    virtual void Finalize(HdRenderParam *renderParam) override;
-    virtual void Sync(HdSceneDelegate* sceneDelegate,
-                      HdRenderParam*   renderParam,
-                      HdDirtyBits*     dirtyBits,
-                      TfToken const    &reprToken) override;
 protected:
-    virtual HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
-    virtual void _InitRepr(TfToken const &reprToken,
-                           HdDirtyBits *dirtyBits) override;
-
-private:
-    riley::GeometryMasterId _masterId;
-    std::vector<riley::GeometryInstanceId> _instanceIds;
-
-    // This class does not support copying.
-    HdPrman_Points(const HdPrman_Points&)             = delete;
-    HdPrman_Points &operator =(const HdPrman_Points&) = delete;
+    virtual void
+    _ConvertGeometry(HdPrman_Context *context,
+                      RixRileyManager *mgr,
+                      HdSceneDelegate *sceneDelegate,
+                      const SdfPath &id,
+                      RtUString *primType,
+                      std::vector<HdGeomSubset> *geomSubsets,
+                      RixParamList* &primvars) override;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_POINTS_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_POINTS_H

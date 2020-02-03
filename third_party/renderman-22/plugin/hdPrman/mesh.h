@@ -21,10 +21,11 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_MESH_H
-#define HDPRMAN_MESH_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MESH_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MESH_H
 
 #include "pxr/pxr.h"
+#include "hdPrman/gprim.h"
 #include "pxr/imaging/hd/mesh.h"
 #include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hd/vertexAdjacency.h"
@@ -34,35 +35,24 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-class HdPrman_Mesh final : public HdMesh {
+class HdPrman_Mesh final : public HdPrman_Gprim<HdMesh> {
 public:
+    typedef HdPrman_Gprim<HdMesh> BASE;
     HF_MALLOC_TAG_NEW("new HdPrman_Mesh");
-
     HdPrman_Mesh(SdfPath const& id,
                 SdfPath const& instancerId = SdfPath());
-    virtual ~HdPrman_Mesh() = default;
-
     virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
-    virtual void Finalize(HdRenderParam *renderParam) override;
-    virtual void Sync(HdSceneDelegate* sceneDelegate,
-                      HdRenderParam*   renderParam,
-                      HdDirtyBits*     dirtyBits,
-                      TfToken const    &reprToken) override;
-
 protected:
-    virtual HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
-    virtual void _InitRepr(TfToken const &reprToken,
-                           HdDirtyBits *dirtyBits) override;
-
-private:
-    std::vector<riley::GeometryMasterId> _masterIds;
-    std::vector<riley::GeometryInstanceId> _instanceIds;
-
-    // This class does not support copying.
-    HdPrman_Mesh(const HdPrman_Mesh&)             = delete;
-    HdPrman_Mesh &operator =(const HdPrman_Mesh&) = delete;
+    virtual void
+    _ConvertGeometry(HdPrman_Context *context,
+                      RixRileyManager *mgr,
+                      HdSceneDelegate *sceneDelegate,
+                      const SdfPath &id,
+                      RtUString *primType,
+                      std::vector<HdGeomSubset> *geomSubsets,
+                      RixParamList* &primvars) override;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_MESH_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MESH_H

@@ -21,47 +21,36 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_BASISCURVES_H
-#define HDPRMAN_BASISCURVES_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_BASIS_CURVES_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_BASIS_CURVES_H
 
 #include "pxr/pxr.h"
+#include "hdPrman/gprim.h"
 #include "pxr/imaging/hd/basisCurves.h"
 #include "pxr/imaging/hd/enums.h"
-#include "pxr/imaging/hd/vertexAdjacency.h"
-#include "pxr/base/gf/matrix4f.h"
 
 #include "Riley.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-class HdPrman_BasisCurves final : public HdBasisCurves {
+class HdPrman_BasisCurves final : public HdPrman_Gprim<HdBasisCurves> {
 public:
+    typedef HdPrman_Gprim<HdBasisCurves> BASE;
     HF_MALLOC_TAG_NEW("new HdPrman_BasisCurves");
-
     HdPrman_BasisCurves(SdfPath const& id,
                 SdfPath const& instancerId = SdfPath());
-    virtual ~HdPrman_BasisCurves() = default;
     virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
-    virtual void Finalize(HdRenderParam *renderParam) override;
-    virtual void Sync(HdSceneDelegate* sceneDelegate,
-                      HdRenderParam*   renderParam,
-                      HdDirtyBits*     dirtyBits,
-                      TfToken const    &reprToken) override;
-
 protected:
-    virtual HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
-    virtual void _InitRepr(TfToken const &reprToken,
-                           HdDirtyBits *dirtyBits) override;
-
-private:
-    riley::GeometryMasterId _masterId;
-    riley::GeometryInstanceId _instanceId;
-
-    // This class does not support copying.
-    HdPrman_BasisCurves(const HdPrman_BasisCurves&)             = delete;
-    HdPrman_BasisCurves &operator =(const HdPrman_BasisCurves&) = delete;
+    virtual void
+    _ConvertGeometry(HdPrman_Context *context,
+                      RixRileyManager *mgr,
+                      HdSceneDelegate *sceneDelegate,
+                      const SdfPath &id,
+                      RtUString *primType,
+                      std::vector<HdGeomSubset> *geomSubsets,
+                      RixParamList* &primvars) override;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_BASISCURVES_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_BASIS_CURVES_H

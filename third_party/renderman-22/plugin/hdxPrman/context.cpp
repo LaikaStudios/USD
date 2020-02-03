@@ -22,12 +22,13 @@
 // language governing permissions and limitations under the Apache License.
 //
 
-#include "hdxPrman/context.h"
-#include "hdxPrman/rendererPlugin.h"
+#include "context.h"
+#include "rendererPlugin.h"
 #include "hdPrman/rixStrings.h"
 
 #include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/tf/envSetting.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
@@ -44,9 +45,28 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
+// This RenderMan callback allows scene edits to be flushed asynchronously
+// during IPR. It is unused here because hydra requires edits to be flushed
+// immediately during scene traversal.
+static riley::RileyCallback nullRileyCallback([](void*){}, nullptr);
+
 void HdxPrman_RenderThreadCallback(HdxPrman_InteractiveContext *context)
 {
-    context->riley->Render();
+    bool renderComplete = false;
+    while (!renderComplete) {
+        while (context->renderThread.IsPauseRequested()) {
+            if (context->renderThread.IsStopRequested()) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (context->renderThread.IsStopRequested()) {
+            break;
+        }
+        context->riley->Render();
+        // If a pause was requested, we may have stopped early
+        renderComplete = !context->renderThread.IsPauseDirty();
+    }
 }
 
 HdxPrman_InteractiveContext::HdxPrman_InteractiveContext() :
@@ -64,6 +84,10 @@ HdxPrman_InteractiveContext::~HdxPrman_InteractiveContext()
         End();
     }
 }
+
+TF_DEFINE_ENV_SETTING(HDX_PRMAN_ENABLE_MOTIONBLUR, true, "bool env setting to control hdPrman motion blur");
+TF_DEFINE_ENV_SETTING(HDX_PRMAN_NTHREADS, 0, "override number of threads used by hdPrman");
+TF_DEFINE_ENV_SETTING(HDX_PRMAN_OSL_VERBOSE, 0, "override osl verbose in hdPrman");
 
 void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
 {
@@ -118,50 +142,48 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
     //
     // Riley setup
     //
-    static const RtUString us_circle("circle");
-    static const RtUString us_PxrPathTracer("PxrPathTracer");
-    static const RtUString us_PathTracer("PathTracer");
-    static const RtUString us_main_cam("main_cam");
-    static const RtUString us_PxrPerspective("PxrPerspective");
-    static const RtUString us_main_cam_projection("main_cam_projection");
-    static const RtUString us_hydra("hydra");
     static const RtUString us_bufferID("bufferID");
-    static const RtUString us_shadowFalloff("shadowFalloff");
-    static const RtUString us_shadowDistance("shadowDistance");
-    static const RtUString us_PxrDomeLight("PxrDomeLight");
-    static const RtUString us_lightA("lightA");
-    static const RtUString us_PxrPrimvar("PxrPrimvar");
-    static const RtUString us_pv_color("pv_color");
-    static const RtUString us_varname("varname");
-    static const RtUString us_displayColor("displayColor");
+    static const RtUString us_circle("circle");
     static const RtUString us_defaultColor("defaultColor");
-    static const RtUString us_PxrSurface("PxrSurface");
-    static const RtUString us_simpleTestSurface("simpleTestSurface");
-    static const RtUString us_diffuseColor("diffuseColor");
-    static const RtUString us_pv_color_resultRGB("pv_color:resultRGB");
-    static const RtUString us_specularModelType("specularModelType");
-    static const RtUString us_diffuseDoubleSided("diffuseDoubleSided");
-    static const RtUString us_specularDoubleSided("specularDoubleSided");
-    static const RtUString us_specularFaceColor("specularFaceColor");
-    static const RtUString us_specularEdgeColor("specularEdgeColor");
-    static const RtUString us_PxrVolume("PxrVolume");
-    static const RtUString us_simpleVolume("simpleVolume");
-    static const RtUString us_densityFloatPrimVar("densityFloatPrimVar");
+    static const RtUString us_default("default");
     static const RtUString us_density("density");
+    static const RtUString us_densityFloatPrimVar("densityFloatPrimVar");
+    static const RtUString us_diffuseColor("diffuseColor");
+    static const RtUString us_diffuseDoubleSided("diffuseDoubleSided");
+    static const RtUString us_displayColor("displayColor");
+    static const RtUString us_hydra("hydra");
+    static const RtUString us_lightA("lightA");
+    static const RtUString us_main_cam("main_cam");
+    static const RtUString us_main_cam_projection("main_cam_projection");
+    static const RtUString us_PathTracer("PathTracer");
+    static const RtUString us_pv_color("pv_color");
+    static const RtUString us_pv_color_resultRGB("pv_color:resultRGB");
+    static const RtUString us_PxrDomeLight("PxrDomeLight");
+    static const RtUString us_PxrPathTracer("PxrPathTracer");
+    static const RtUString us_PxrPerspective("PxrPerspective");
+    static const RtUString us_PxrPrimvar("PxrPrimvar");
+    static const RtUString us_PxrSurface("PxrSurface");
+    static const RtUString us_PxrVolume("PxrVolume");
+    static const RtUString us_shadowDistance("shadowDistance");
+    static const RtUString us_shadowFalloff("shadowFalloff");
+    static const RtUString us_simpleTestSurface("simpleTestSurface");
+    static const RtUString us_simpleVolume("simpleVolume");
+    static const RtUString us_specularDoubleSided("specularDoubleSided");
+    static const RtUString us_specularEdgeColor("specularEdgeColor");
+    static const RtUString us_specularFaceColor("specularFaceColor");
+    static const RtUString us_specularModelType("specularModelType");
+    static const RtUString us_varname("varname");
 
     riley::ScopedCoordinateSystem const k_NoCoordsys = { 0, nullptr };
 
-    // Configure default time samples.
-    defaultTimeSamples.push_back(0.0);
-    defaultTimeSamples.push_back(1.0);
-    // XXX In the future, we'll want a way for clients to configure this map.
-    timeSampleMap[SdfPath::AbsoluteRootPath()] = defaultTimeSamples;
-
     // XXX Shutter settings from studio katana defaults:
     // - /root.renderSettings.shutter{Open,Close}
-    const float shutterInterval[2] = { 0.0f, 0.5f };
+    float shutterInterval[2] = { 0.0f, 0.5f };
     // - /root.prmanGlobalStatements.camera.shutterOpening.shutteropening
     const float shutterCurve[10] = {0, 0.05, 0, 0, 0, 0, 0.05, 1.0, 0.35, 0.0};
+
+    if (!TfGetEnvSetting(HDX_PRMAN_ENABLE_MOTIONBLUR))
+        shutterInterval[1] = 0.0;
 
     // Options
     {
@@ -170,6 +192,18 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
         // Set thread limit for Renderman. Leave a few threads for app.
         static const unsigned appThreads = 4;
         unsigned nThreads = std::max(WorkGetConcurrencyLimit()-appThreads, 1u);
+        // Check the environment
+        unsigned nThreadsEnv = TfGetEnvSetting(HDX_PRMAN_NTHREADS);
+        if (nThreadsEnv > 0) {
+            nThreads = nThreadsEnv;
+        } else {
+            // Otherwise check for a render setting
+            VtValue vtThreads = renderDelegate->GetRenderSetting(
+                HdRenderSettingsTokens->threadLimit).Cast<int>();
+            if (!vtThreads.IsEmpty()) {
+                nThreads = vtThreads.UncheckedGet<int>();
+            }
+        }
         options->SetInteger(RixStr.k_limits_threads, nThreads);
 
         // XXX: Currently, Renderman doesn't support resizing the viewport
@@ -184,11 +218,19 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
         // Read the maxSamples out of settings (if it exists). Use a default
         // of 1024, so we don't cut the progressive render off early.
         // Setting a lower value here would be useful for unit tests.
-        const int defaultMaxSamples = 1024;
-        int maxSamples = renderDelegate->GetRenderSetting<int>(
-            HdRenderSettingsTokens->convergedSamplesPerPixel,
-            defaultMaxSamples);
+        VtValue vtMaxSamples = renderDelegate->GetRenderSetting(
+            HdRenderSettingsTokens->convergedSamplesPerPixel).Cast<int>();
+        int maxSamples = TF_VERIFY(!vtMaxSamples.IsEmpty()) ?
+            vtMaxSamples.UncheckedGet<int>() : 1024;
         options->SetInteger(RixStr.k_hider_maxsamples, maxSamples);
+
+        // Read the variance threshold out of settings (if it exists). Use a
+        // default of 0.001.
+        VtValue vtPixelVariance = renderDelegate->GetRenderSetting(
+            HdRenderSettingsTokens->convergedVariance).Cast<float>();
+        float pixelVariance = TF_VERIFY(!vtPixelVariance.IsEmpty()) ?
+            vtPixelVariance.UncheckedGet<float>() : 0.001f;
+        options->SetFloat(RixStr.k_Ri_PixelVariance, pixelVariance);
 
         // Searchpaths (TEXTUREPATH, etc)
         HdPrman_UpdateSearchPathsFromEnvironment(options);
@@ -199,12 +241,16 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
         options->SetInteger(RixStr.k_hider_minsamples, 1);
         options->SetInteger(RixStr.k_trace_maxdepth, 10);
         options->SetFloat(RixStr.k_Ri_FormatPixelAspectRatio, 1.0f);
-        options->SetFloat(RixStr.k_Ri_PixelVariance, 0.001f);
         options->SetString(RixStr.k_bucket_order, us_circle);
 
         // Camera lens
         options->SetFloatArray(RixStr.k_Ri_Shutter, shutterInterval, 2);
 
+        // OSL verbose
+        int oslVerbose = TfGetEnvSetting(HDX_PRMAN_OSL_VERBOSE);
+        if (oslVerbose > 0)
+            options->SetInteger(RtUString("user:osl:verbose"), oslVerbose);
+        
         riley->SetOptions(*options);
         mgr->DestroyRixParamList(options);
     }
@@ -240,7 +286,7 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
         // Projection
         RixParamList *projParams = mgr->CreateRixParamList();
         projParams->SetFloat(RixStr.k_fov, 60.0f);
-        cameraNode = riley::ShadingNode {
+        riley::ShadingNode cameraNode = riley::ShadingNode {
             riley::ShadingNode::k_Projection,
             us_PxrPerspective,
             us_main_cam_projection,
@@ -320,8 +366,8 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
             us_lightA, // handle
             params
         };
-        riley::LightShaderId _fallbackLightShader = riley->CreateLightShader(
-            &lightNode, 1, nullptr, 0);
+        riley::LightShaderId _fallbackLightShader =
+            riley->CreateLightShader(&lightNode, 1, nullptr, 0);
 
         // Constant identity transform
         float const zerotime = 0.0f;
@@ -329,8 +375,16 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
         riley::Transform xform = { 1, &matrix, &zerotime };
 
         // Light instance
+        SdfPath fallbackLightId("/_FallbackLight");
         _fallbackLightEnabled = true;
         _fallbackLightAttrs = mgr->CreateRixParamList();
+        // Initialize default categories.
+        ConvertCategoriesToAttributes(
+            fallbackLightId, VtArray<TfToken>(), _fallbackLightAttrs);
+        _fallbackLightAttrs->SetString(RixStr.k_grouping_membership,
+                                       us_default);
+        _fallbackLightAttrs->SetString(RixStr.k_identifier_name,
+                                       RtUString(fallbackLightId.GetText()));
         _fallbackLightAttrs->SetInteger(RixStr.k_visibility_camera, 0);
         _fallbackLightAttrs->SetInteger(RixStr.k_visibility_indirect, 1);
         _fallbackLightAttrs->SetInteger(RixStr.k_visibility_transmission, 1);
@@ -396,7 +450,8 @@ void HdxPrman_InteractiveContext::Begin(HdRenderDelegate *renderDelegate)
     }
 
     // Prepare Riley state for rendering.
-    riley->Begin(nullptr);
+    // Pass a valid riley callback pointer during IPR
+    riley->Begin(&nullRileyCallback);
 
     renderThread.StartThread();
 }
@@ -408,13 +463,13 @@ void HdxPrman_InteractiveContext::End()
     // Reset to initial state.
     if(riley) {
         riley->End();
-        riley = nullptr;
     }
     if (mgr) {
         mgr->DestroyRixParamList(_fallbackLightAttrs);
         mgr->DestroyRiley(riley);
         mgr = nullptr;
     }
+    riley = nullptr;
     if (ri) {
         ri->PRManEnd();
         ri = nullptr;

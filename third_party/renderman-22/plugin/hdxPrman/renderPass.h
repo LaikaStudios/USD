@@ -21,14 +21,15 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDXPRMAN_RENDER_PASS_H
-#define HDXPRMAN_RENDER_PASS_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_PASS_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_PASS_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/renderPass.h"
-#include "pxr/imaging/hdx/compositor.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "Riley.h"
+
+#include <chrono>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -60,9 +61,13 @@ private:
 
     GfMatrix4d _lastProj, _lastViewToWorldMatrix;
 
-    HdxCompositor _compositor;
+    std::chrono::steady_clock::time_point _frameStart;
+    std::string _integrator;
+    std::string _quickIntegrator;
+    float _quickIntegrateTime;
+    bool _quickIntegrate;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDXPRMAN_RENDER_PASS_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_PASS_H

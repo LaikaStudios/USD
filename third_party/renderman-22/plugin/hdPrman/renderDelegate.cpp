@@ -21,34 +21,46 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
+#include "hdPrman/basisCurves.h"
+#include "hdPrman/camera.h"
 #include "hdPrman/context.h"
-#include "hdPrman/instancer.h"
 #include "hdPrman/coordSys.h"
+#include "hdPrman/instancer.h"
 #include "hdPrman/light.h"
+#include "hdPrman/lightFilter.h"
 #include "hdPrman/material.h"
+#include "hdPrman/mesh.h"
+#include "hdPrman/points.h"
 #include "hdPrman/renderDelegate.h"
 #include "hdPrman/renderParam.h"
 #include "hdPrman/renderPass.h"
-#include "pxr/imaging/hd/tokens.h"
-#include "hdPrman/basisCurves.h"
-#include "hdPrman/mesh.h"
-#include "hdPrman/points.h"
 #include "hdPrman/volume.h"
-#include "pxr/imaging/hd/camera.h"
+
+#include "pxr/imaging/hd/tokens.h"
 #include "pxr/imaging/hd/bprim.h"
+#include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hd/extComputation.h"
-#include "pxr/imaging/hd/sprim.h"
-#include "pxr/imaging/hd/rprim.h"
 #include "pxr/imaging/hd/resourceRegistry.h"
+#include "pxr/imaging/hd/rprim.h"
+#include "pxr/imaging/hd/sprim.h"
+
+#include "pxr/base/tf/getenv.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
  
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
-    (openvdbAsset));
+    (openvdbAsset)
+    (pxrBarnLightFilter)
+    (pxrIntMultLightFilter)
+    (pxrRodLightFilter)
+);
 
 TF_DEFINE_PUBLIC_TOKENS(HdPrmanRenderSettingsTokens,
     HDPRMAN_RENDER_SETTINGS_TOKENS);
+
+TF_DEFINE_PUBLIC_TOKENS(HdPrmanIntegratorTokens,
+    HDPRMAN_INTEGRATOR_TOKENS);
 
 const TfTokenVector HdPrmanRenderDelegate::SUPPORTED_RPRIM_TYPES =
 {
@@ -70,6 +82,9 @@ const TfTokenVector HdPrmanRenderDelegate::SUPPORTED_SPRIM_TYPES =
     HdPrimTypeTokens->sphereLight,
     HdPrimTypeTokens->extComputation,
     HdPrimTypeTokens->coordSys,
+    _tokens->pxrBarnLightFilter,
+    _tokens->pxrIntMultLightFilter,
+    _tokens->pxrRodLightFilter,
 };
 
 const TfTokenVector HdPrmanRenderDelegate::SUPPORTED_BPRIM_TYPES =
@@ -97,10 +112,50 @@ HdPrmanRenderDelegate::_Initialize()
     _renderParam = std::make_shared<HdPrman_RenderParam>(_context);
     _resourceRegistry.reset(new HdResourceRegistry());
 
-    _settingDescriptors.resize(1);
-    _settingDescriptors[0] = { std::string("Integrator"),
+    std::string integrator = HdPrmanIntegratorTokens->PxrPathTracer;
+    const std::string interactiveIntegrator = 
+        HdPrmanIntegratorTokens->PxrDirectLighting;
+    std::string integratorEnv = TfGetenv("HDX_PRMAN_INTEGRATOR");
+    if (!integratorEnv.empty())
+        integrator = integratorEnv;
+
+    int maxSamples = 1024;
+    int maxSamplesEnv = TfGetenvInt("HDX_PRMAN_MAX_SAMPLES", 0);
+    if (maxSamplesEnv != 0)
+        maxSamples = maxSamplesEnv;
+
+    float pixelVariance = 0.001f;
+
+    _settingDescriptors.resize(5);
+
+    _settingDescriptors[0] = { 
+        std::string("Integrator"),
         HdPrmanRenderSettingsTokens->integrator,
-        VtValue("PxrPathTracer") };
+        VtValue(integrator) 
+    };
+
+    _settingDescriptors[1] = {
+        std::string("Interactive Integrator"),
+        HdPrmanRenderSettingsTokens->interactiveIntegrator,
+        VtValue(interactiveIntegrator)
+    };
+
+    // If >0, the time in ms that we'll render quick output before switching
+    // to path tracing
+    _settingDescriptors[2] = {
+        std::string("Interactive Integrator Timeout (ms)"),
+        HdPrmanRenderSettingsTokens->interactiveIntegratorTimeout,
+        VtValue(200)
+    };
+
+    _settingDescriptors[3] = { std::string("Max Samples"),
+        HdRenderSettingsTokens->convergedSamplesPerPixel,
+        VtValue(maxSamples) };
+
+    _settingDescriptors[4] = { std::string("Variance Threshold"),
+        HdRenderSettingsTokens->convergedVariance,
+        VtValue(pixelVariance) };
+
     _PopulateDefaultSettings(_settingDescriptors);
 }
 
@@ -210,16 +265,23 @@ HdPrmanRenderDelegate::CreateSprim(TfToken const& typeId,
                                     SdfPath const& sprimId)
 {
     if (typeId == HdPrimTypeTokens->camera) {
-        return new HdCamera(sprimId);
+        return new HdPrmanCamera(sprimId);
     } else if (typeId == HdPrimTypeTokens->material) {
         return new HdPrmanMaterial(sprimId);
     } else if (typeId == HdPrimTypeTokens->coordSys) {
         return new HdPrmanCoordSys(sprimId);
+    } else if (typeId == _tokens->pxrBarnLightFilter ||
+               typeId == _tokens->pxrIntMultLightFilter ||
+               typeId == _tokens->pxrRodLightFilter) {
+        return new HdPrmanLightFilter(sprimId, typeId);
     } else if (typeId == HdPrimTypeTokens->distantLight ||
                typeId == HdPrimTypeTokens->domeLight ||
                typeId == HdPrimTypeTokens->rectLight ||
                typeId == HdPrimTypeTokens->diskLight ||
                typeId == HdPrimTypeTokens->cylinderLight ||
+               typeId == _tokens->pxrBarnLightFilter ||
+               typeId == _tokens->pxrIntMultLightFilter ||
+               typeId == _tokens->pxrRodLightFilter ||
                typeId == HdPrimTypeTokens->sphereLight) {
         return new HdPrmanLight(sprimId, typeId);
     } else if (typeId == HdPrimTypeTokens->extComputation) {
@@ -237,16 +299,23 @@ HdPrmanRenderDelegate::CreateFallbackSprim(TfToken const& typeId)
     // For fallback sprims, create objects with an empty scene path.
     // They'll use default values and won't be updated by a scene delegate.
     if (typeId == HdPrimTypeTokens->camera) {
-        return new HdCamera(SdfPath::EmptyPath());
+        return new HdPrmanCamera(SdfPath::EmptyPath());
     } else if (typeId == HdPrimTypeTokens->material) {
         return new HdPrmanMaterial(SdfPath::EmptyPath());
     } else if (typeId == HdPrimTypeTokens->coordSys) {
         return new HdPrmanCoordSys(SdfPath::EmptyPath());
+    } else if (typeId == _tokens->pxrBarnLightFilter ||
+               typeId == _tokens->pxrIntMultLightFilter ||
+               typeId == _tokens->pxrRodLightFilter) {
+        return new HdPrmanLightFilter(SdfPath::EmptyPath(), typeId);
     } else if (typeId == HdPrimTypeTokens->distantLight ||
                typeId == HdPrimTypeTokens->domeLight ||
                typeId == HdPrimTypeTokens->rectLight ||
                typeId == HdPrimTypeTokens->diskLight ||
                typeId == HdPrimTypeTokens->cylinderLight ||
+               typeId == _tokens->pxrBarnLightFilter ||
+               typeId == _tokens->pxrIntMultLightFilter ||
+               typeId == _tokens->pxrRodLightFilter ||
                typeId == HdPrimTypeTokens->sphereLight) {
         return new HdPrmanLight(SdfPath::EmptyPath(), typeId);
     } else if (typeId == HdPrimTypeTokens->extComputation) {
@@ -309,9 +378,7 @@ HdPrmanRenderDelegate::GetMaterialNetworkSelector() const
 TfTokenVector
 HdPrmanRenderDelegate::GetShaderSourceTypes() const
 {
-    static const TfToken OSL("OSL");
-    static const TfToken RmanCpp("RmanCpp");
-    return {OSL, RmanCpp};
+    return HdPrmanMaterial::GetShaderSourceTypes();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

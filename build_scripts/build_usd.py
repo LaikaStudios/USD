@@ -25,6 +25,7 @@ from distutils.spawn import find_executable
 
 import argparse
 import contextlib
+import ctypes
 import datetime
 import distutils
 import fnmatch
@@ -107,13 +108,27 @@ def GetVisualStudioCompilerAndVersion():
         # VisualStudioVersion environment variable should be set by the
         # Visual Studio Command Prompt.
         match = re.search(
-            "(\d+).(\d+)", 
+            r"(\d+)\.(\d+)",
             os.environ.get("VisualStudioVersion", ""))
         if match:
             return (msvcCompiler, tuple(int(v) for v in match.groups()))
     return None
 
+def IsVisualStudio2019OrGreater():
+    if not Windows():
+        return False
+
+    VISUAL_STUDIO_2019_VERSION = (16, 0)
+    msvcCompilerAndVersion = GetVisualStudioCompilerAndVersion()
+    if msvcCompilerAndVersion:
+        _, version = msvcCompilerAndVersion
+        return version >= VISUAL_STUDIO_2019_VERSION
+    return False
+
 def IsVisualStudio2017OrGreater():
+    if not Windows():
+        return False
+
     VISUAL_STUDIO_2017_VERSION = (15, 0)
     msvcCompilerAndVersion = GetVisualStudioCompilerAndVersion()
     if msvcCompilerAndVersion:
@@ -274,13 +289,18 @@ def RunCMake(context, force, extraArgs = None):
     # building a 64-bit project. (Surely there is a better way to do this?)
     # TODO: figure out exactly what "vcvarsall.bat x64" sets to force x64
     if generator is None and Windows():
-        if IsVisualStudio2017OrGreater():
+        if IsVisualStudio2019OrGreater():
+            generator = "Visual Studio 16 2019"
+        elif IsVisualStudio2017OrGreater():
             generator = "Visual Studio 15 2017 Win64"
         else:
             generator = "Visual Studio 14 2015 Win64"
 
     if generator is not None:
         generator = '-G "{gen}"'.format(gen=generator)
+
+    if IsVisualStudio2019OrGreater():
+        generator = generator + " -A x64"
                 
     # On MacOS, enable the use of @rpath for relocatable builds.
     osx_rpath = None
@@ -312,6 +332,31 @@ def RunCMake(context, force, extraArgs = None):
         Run("cmake --build . --config {config} --target install -- {multiproc}"
             .format(config=config,
                     multiproc=FormatMultiProcs(context.numJobs, generator)))
+
+def GetCMakeVersion():
+    """
+    Returns the CMake version as tuple of integers (major, minor) or
+    (major, minor, patch) or None if an error occured while launching cmake and
+    parsing its output.
+    """
+
+    output_string = GetCommandOutput("cmake --version")
+    if not output_string:
+        PrintWarning("Could not determine cmake version -- please install it "
+                     "and adjust your PATH")
+        return None
+
+    # cmake reports, e.g., "... version 3.14.3"
+    match = re.search(r"version (\d+)\.(\d+)(\.(\d+))?", output_string)
+    if not match:
+        PrintWarning("Could not determine cmake version")
+        return None
+
+    major, minor, patch_group, patch = match.groups()
+    if patch_group is None:
+        return (int(major), int(minor))
+    else:
+        return (int(major), int(minor), int(patch))
 
 def PatchFile(filename, patches, multiLineMatches=False):
     """Applies patches to the specified file. patches is a list of tuples
@@ -524,23 +569,24 @@ ZLIB = Dependency("zlib", InstallZlib, "include/zlib.h")
 # boost
 
 if Linux():
-    BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.55.0/boost_1_55_0.tar.gz"
+    BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.61.0/boost_1_61_0.tar.gz"
     BOOST_VERSION_FILE = "include/boost/version.hpp"
 elif MacOS():
     BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.61.0/boost_1_61_0.tar.gz"
     BOOST_VERSION_FILE = "include/boost/version.hpp"
 elif Windows():
-    BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.61.0/boost_1_61_0.tar.gz"
+    # On Visual Studio 2017 we need at least boost 1.65.1
     # The default installation of boost on Windows puts headers in a versioned 
     # subdirectory, which we have to account for here. In theory, specifying 
     # "layout=system" would make the Windows install match Linux/MacOS, but that 
     # causes problems for other dependencies that look for boost.
-    BOOST_VERSION_FILE = "include/boost-1_61/boost/version.hpp"
-
-    # On Visual Studio 2017 we need at least boost 1.65.1
     if IsVisualStudio2017OrGreater():
         BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.65.1/boost_1_65_1.tar.gz"
         BOOST_VERSION_FILE = "include/boost-1_65_1/boost/version.hpp"
+    else:
+        BOOST_URL = "https://downloads.sourceforge.net/project/boost/boost/1.61.0/boost_1_61_0.tar.gz"
+        BOOST_VERSION_FILE = "include/boost-1_61/boost/version.hpp"
+
 
 def InstallBoost(context, force, buildArgs):
     # Documentation files in the boost archive can have exceptionally
@@ -580,8 +626,26 @@ def InstallBoost(context, force, buildArgs):
 
         if context.buildKatana or context.buildOIIO:
             b2_settings.append("--with-date_time")
+
+        if context.buildKatana or context.buildOIIO or context.enableOpenVDB:
             b2_settings.append("--with-system")
             b2_settings.append("--with-thread")
+
+        if context.enableOpenVDB:
+            b2_settings.append("--with-iostreams")
+
+            # b2 with -sNO_COMPRESSION=1 fails with the following error message:
+            #     error: at [...]/boost_1_61_0/tools/build/src/kernel/modules.jam:107
+            #     error: Unable to find file or target named
+            #     error:     '/zlib//zlib'
+            #     error: referred to from project at
+            #     error:     'libs/iostreams/build'
+            #     error: could not resolve project reference '/zlib'
+
+            # But to avoid an extra library dependency, we can still explicitly
+            # exclude the bzip2 compression from boost_iostreams (note that
+            # OpenVDB uses blosc compression).
+            b2_settings.append("-sNO_BZIP2=1")
 
         if context.buildOIIO:
             b2_settings.append("--with-filesystem")
@@ -590,6 +654,8 @@ def InstallBoost(context, force, buildArgs):
             b2_settings.append("-a")
 
         if Windows():
+            if IsVisualStudio2019OrGreater():
+                pass
             if IsVisualStudio2017OrGreater():
                 b2_settings.append("toolset=msvc-14.1")
             else:
@@ -642,6 +708,12 @@ def InstallTBB_Windows(context, force, buildArgs):
 
 def InstallTBB_LinuxOrMacOS(context, force, buildArgs):
     with CurrentWorkingDirectory(DownloadURL(TBB_URL, context, force)):
+        # Note: TBB installation fails on OSX when cuda is installed, a 
+        # suggested fix:
+        # https://github.com/spack/spack/issues/6000#issuecomment-358817701
+        if MacOS():
+            PatchFile("build/macos.inc", 
+                    [("shell clang -v ", "shell clang --version ")])
         # TBB does not support out-of-source builds in a custom location.
         Run('make -j{procs} {buildArgs}'
             .format(procs=context.numJobs, 
@@ -838,6 +910,52 @@ def InstallPtex_LinuxOrMacOS(context, force, buildArgs):
 PTEX = Dependency("Ptex", InstallPtex, "include/PtexVersion.h")
 
 ############################################################
+# BLOSC (Compression used by OpenVDB)
+
+# Using latest blosc since neither the version OpenVDB recommends
+# (1.5) nor the version we test against (1.6.1) compile on Mac OS X
+# Sierra (10.12) or Mojave (10.14).
+BLOSC_URL = "https://github.com/Blosc/c-blosc/archive/v1.17.0.zip"
+
+def InstallOpenVDB(context, force, buildArgs):
+    with CurrentWorkingDirectory(DownloadURL(BLOSC_URL, context, force)):
+        RunCMake(context, force, buildArgs)
+
+BLOSC = Dependency("Blosc", InstallOpenVDB, "include/blosc.h")
+
+############################################################
+# OpenVDB
+
+# Using version 6.1.0 since it has reworked its CMake files so that
+# there are better options to not compile the OpenVDB binaries and to
+# not require additional dependencies such as GLFW. Note that version
+# 6.1.0 does require CMake 3.3 though.
+
+OPENVDB_URL = "https://github.com/AcademySoftwareFoundation/openvdb/archive/v6.1.0.zip"
+
+def InstallOpenVDB(context, force, buildArgs):
+    with CurrentWorkingDirectory(DownloadURL(OPENVDB_URL, context, force)):
+        extraArgs = [
+            '-DOPENVDB_BUILD_PYTHON_MODULE=OFF',
+            '-DOPENVDB_BUILD_BINARIES=OFF',
+            '-DOPENVDB_BUILD_UNITTESTS=OFF'
+        ]
+
+        extraArgs.append('-DBOOST_ROOT="{instDir}"'
+                         .format(instDir=context.instDir))
+        extraArgs.append('-DBLOSC_ROOT="{instDir}"'
+                         .format(instDir=context.instDir))
+        extraArgs.append('-DTBB_ROOT="{instDir}"'
+                         .format(instDir=context.instDir))
+        # OpenVDB needs Half type from IlmBase
+        extraArgs.append('-DILMBASE_ROOT="{instDir}"'
+                         .format(instDir=context.instDir))
+        
+        RunCMake(context, force, extraArgs)
+
+OPENVDB = Dependency("OpenVDB", InstallOpenVDB, "include/openvdb/openvdb.h")
+
+############################################################
 # OpenImageIO
 
 OIIO_URL = "https://github.com/OpenImageIO/oiio/archive/Release-1.7.14.zip"
@@ -934,7 +1052,7 @@ def InstallOpenSubdiv(context, force, buildArgs):
         # all TBB libraries it finds, including libtbbmalloc and
         # libtbbmalloc_proxy. On Linux and MacOS, this has the
         # unwanted effect of replacing the system allocator with
-        # tbbmalloc, which can cause problems with the Maya plugin.
+        # tbbmalloc.
         extraArgs.append('-DNO_TBB=ON')
 
         # Add on any user-specified extra arguments.
@@ -1043,6 +1161,19 @@ def InstallAlembic(context, force, buildArgs):
 ALEMBIC = Dependency("Alembic", InstallAlembic, "include/Alembic/Abc/Base.h")
 
 ############################################################
+# Draco
+
+DRACO_URL = "https://github.com/google/draco/archive/master.zip"
+
+def InstallDraco(context, force, buildArgs):
+    with CurrentWorkingDirectory(DownloadURL(DRACO_URL, context, force)):
+        cmakeOptions = ['-DBUILD_USD_PLUGIN=ON']
+        cmakeOptions += buildArgs
+        RunCMake(context, force, cmakeOptions)
+
+DRACO = Dependency("Draco", InstallDraco, "include/Draco/src/draco/compression/decode.h")
+
+############################################################
 # MaterialX
 
 MATERIALX_URL = "https://github.com/materialx/MaterialX/archive/v1.36.0.zip"
@@ -1111,6 +1242,11 @@ def InstallUSD(context, force, buildArgs):
             else:
                 extraArgs.append('-DPXR_ENABLE_PTEX_SUPPORT=OFF')
 
+            if context.enableOpenVDB:
+                extraArgs.append('-DPXR_ENABLE_OPENVDB_SUPPORT=ON')
+            else:
+                extraArgs.append('-DPXR_ENABLE_OPENVDB_SUPPORT=OFF')
+
             if context.buildEmbree:
                 if context.embreeLocation:
                     extraArgs.append('-DEMBREE_LOCATION="{location}"'
@@ -1164,18 +1300,18 @@ def InstallUSD(context, force, buildArgs):
         else:
             extraArgs.append('-DPXR_BUILD_ALEMBIC_PLUGIN=OFF')
 
+        if context.buildDraco:
+            extraArgs.append('-DPXR_BUILD_DRACO_PLUGIN=ON')
+            draco_root = (context.dracoLocation
+                          if context.dracoLocation else context.instDir)
+            extraArgs.append('-DDRACO_ROOT="{}"'.format(draco_root))
+        else:
+            extraArgs.append('-DPXR_BUILD_DRACO_PLUGIN=OFF')
+
         if context.buildMaterialX:
             extraArgs.append('-DPXR_BUILD_MATERIALX_PLUGIN=ON')
         else:
             extraArgs.append('-DPXR_BUILD_MATERIALX_PLUGIN=OFF')
-
-        if context.buildMaya:
-            if context.mayaLocation:
-                extraArgs.append('-DMAYA_LOCATION="{mayaLocation}"'
-                                 .format(mayaLocation=context.mayaLocation))
-            extraArgs.append('-DPXR_BUILD_MAYA_PLUGIN=ON')
-        else:
-            extraArgs.append('-DPXR_BUILD_MAYA_PLUGIN=OFF')
 
         if context.buildKatana:
             if context.katanaApiLocation:
@@ -1243,9 +1379,9 @@ Python. In that case, it is important that USD and the plugins for that DCC are
 built using the DCC's version of Python and not the system version. This can be
 done by running %(prog)s using the DCC's version of Python.
 
-For example, to build USD and the Maya plugins on macOS for Maya 2019, run:
+For example, to build USD on macOS for use in Maya 2019, run:
 
-/Applications/Autodesk/maya2019/Maya.app/Contents/bin/mayapy %(prog)s --maya --no-usdview ...
+/Applications/Autodesk/maya2019/Maya.app/Contents/bin/mayapy %(prog)s --no-usdview ...
 
 Note that this is primarily an issue on macOS, where a DCC's version of Python
 is likely to conflict with the version provided by the system. On other
@@ -1353,6 +1489,13 @@ subgroup.add_argument("--no-ptex", dest="enable_ptex",
                       action="store_false",
                       help="Disable Ptex support in imaging (default)")
 subgroup = group.add_mutually_exclusive_group()
+subgroup.add_argument("--openvdb", dest="enable_openvdb", action="store_true", 
+                      default=False, 
+                      help="Enable OpenVDB support in imaging")
+subgroup.add_argument("--no-openvdb", dest="enable_openvdb", 
+                      action="store_false",
+                      help="Disable OpenVDB support in imaging (default)")
+subgroup = group.add_mutually_exclusive_group()
 subgroup.add_argument("--usdview", dest="build_usdview",
                       action="store_true", default=True,
                       help="Build usdview (default)")
@@ -1404,6 +1547,16 @@ subgroup.add_argument("--hdf5", dest="enable_hdf5", action="store_true",
 subgroup.add_argument("--no-hdf5", dest="enable_hdf5", action="store_false",
                       help="Disable HDF5 support in the Alembic plugin (default)")
 
+group = parser.add_argument_group(title="Draco Plugin Options")
+subgroup = group.add_mutually_exclusive_group()
+subgroup.add_argument("--draco", dest="build_draco", action="store_true", 
+                      default=False,
+                      help="Build Draco plugin for USD")
+subgroup.add_argument("--no-draco", dest="build_draco", action="store_false",
+                      help="Do not build Draco plugin for USD (default)")
+group.add_argument("--draco-location", type=str,
+                   help="Directory where Draco is installed.")
+
 group = parser.add_argument_group(title="MaterialX Plugin Options")
 subgroup = group.add_mutually_exclusive_group()
 subgroup.add_argument("--materialx", dest="build_materialx", action="store_true", 
@@ -1411,16 +1564,6 @@ subgroup.add_argument("--materialx", dest="build_materialx", action="store_true"
                       help="Build MaterialX plugin for USD")
 subgroup.add_argument("--no-materialx", dest="build_materialx", action="store_false",
                       help="Do not build MaterialX plugin for USD (default)")
-
-group = parser.add_argument_group(title="Maya Plugin Options")
-subgroup = group.add_mutually_exclusive_group()
-subgroup.add_argument("--maya", dest="build_maya", action="store_true", 
-                      default=False,
-                      help="Build Maya plugin for USD")
-subgroup.add_argument("--no-maya", dest="build_maya", action="store_false",
-                      help="Do not build Maya plugin for USD (default)")
-group.add_argument("--maya-location", type=str,
-                   help="Directory where Maya is installed.")
 
 group = parser.add_argument_group(title="Katana Plugin Options")
 subgroup = group.add_mutually_exclusive_group()
@@ -1518,6 +1661,7 @@ class InstallContext:
         self.buildImaging = (args.build_imaging == IMAGING or
                              args.build_imaging == USD_IMAGING)
         self.enablePtex = self.buildImaging and args.enable_ptex
+        self.enableOpenVDB = self.buildImaging and args.enable_openvdb
 
         # - USD Imaging
         self.buildUsdImaging = (args.build_imaging == USD_IMAGING)
@@ -1541,13 +1685,13 @@ class InstallContext:
         self.buildAlembic = args.build_alembic
         self.enableHDF5 = self.buildAlembic and args.enable_hdf5
 
+        # - Draco Plugin
+        self.buildDraco = args.build_draco
+        self.dracoLocation = (os.path.abspath(args.draco_location)
+                                if args.draco_location else None)
+
         # - MaterialX Plugin
         self.buildMaterialX = args.build_materialx
-
-        # - Maya Plugin
-        self.buildMaya = args.build_maya
-        self.mayaLocation = (os.path.abspath(args.maya_location) 
-                             if args.maya_location else None)
 
         # - Katana Plugin
         self.buildKatana = args.build_katana
@@ -1602,6 +1746,9 @@ if context.buildAlembic:
         requiredDependencies += [HDF5]
     requiredDependencies += [OPENEXR, ALEMBIC]
 
+if context.buildDraco:
+    requiredDependencies += [DRACO]
+
 if context.buildMaterialX:
     requiredDependencies += [MATERIALX]
 
@@ -1611,6 +1758,11 @@ if context.buildImaging:
 
     requiredDependencies += [OPENEXR, GLEW, 
                              OPENSUBDIV]
+
+    if context.enableOpenVDB:
+        # OpenVDB requires Half type from IlmBase which is already
+        # pulled in through OPENEXR.
+        requiredDependencies += [BLOSC, OPENVDB]
     
     if context.buildOIIO:
         requiredDependencies += [JPEG, TIFF, PNG, OPENIMAGEIO]
@@ -1628,6 +1780,12 @@ if context.buildUsdview:
 if Linux():
     requiredDependencies.remove(ZLIB)
 
+# Error out if user is building monolithic library on windows with draco plugin
+# enabled. This currently results in missing symbols.
+if context.buildDraco and context.buildMonolithic and Windows():
+    PrintError("Draco plugin can not be enabled for monolithic build on Windows")
+    sys.exit(1)
+
 # Error out if user explicitly specified building usdview without required
 # components. Otherwise, usdview will be silently disabled. This lets users
 # specify "--no-python" without explicitly having to specify "--no-usdview",
@@ -1644,28 +1802,12 @@ if "--usdview" in sys.argv:
 if not context.buildPython:
     pythonPluginErrorMsg = (
         "%s plugin cannot be built when python support is disabled")
-    if context.buildMaya:
-        PrintError(pythonPluginErrorMsg % "Maya")
-        sys.exit(1)
     if context.buildHoudini:
         PrintError(pythonPluginErrorMsg % "Houdini")
         sys.exit(1)
     if context.buildKatana:
         PrintError(pythonPluginErrorMsg % "Katana")
         sys.exit(1)
-
-# Error out if we're building the Maya plugin and have enabled Ptex support
-# in imaging. Maya includes its own copy of Ptex, which we believe is 
-# version 2.0.41. We would need to build imaging against this version to
-# avoid symbol lookup errors due to library version differences when running
-# the Maya plugin. However, the current version of OpenImageIO requires
-# a later version of Ptex. Rather than try to untangle this, we punt for
-# now.
-if context.buildMaya and PTEX in requiredDependencies:
-    PrintError("Cannot enable Ptex support when building the Maya "
-               "plugin, since using a separately-built Ptex library "
-               "would conflict with the version used by Maya.")
-    sys.exit(1)
 
 # Determine whether we're running in Maya's version of Python. When building
 # against Maya's Python, there are some additional restrictions on what we're
@@ -1681,7 +1823,7 @@ try:
 except:
     pass
 
-if context.buildMaya and isMayaPython:
+if isMayaPython:
     if context.buildUsdview:
         PrintError("Cannot build usdview when building against Maya's version "
                    "of Python. Maya does not provide access to the 'OpenGL' "
@@ -1710,7 +1852,18 @@ if (not find_executable("g++") and
     PrintError("C++ compiler not found -- please install a compiler")
     sys.exit(1)
 
-if not find_executable("python"):
+pythonExecutable = find_executable("python")
+if pythonExecutable:
+    # Error out if a 64bit version of python interpreter is not found
+    # Note: Ideally we should be checking the python binary found above, but
+    # there is an assumption (for very valid reasons) at other places in the
+    # script that the python process used to run this script will be found.
+    isPython64Bit = (ctypes.sizeof(ctypes.c_voidp) == 8)
+    if not isPython64Bit:
+        PrintError("64bit python not found -- please install it and adjust your"
+                   "PATH")
+        sys.exit(1)
+else:
     PrintError("python not found -- please ensure python is included in your "
                "PATH")
     sys.exit(1)
@@ -1744,6 +1897,18 @@ if PYSIDE in requiredDependencies:
                    .format(" or ".join(pysideUic)))
         sys.exit(1)
 
+if OPENVDB in requiredDependencies:
+    # Check OpenVDB's cmake requirements
+    cmake_required_version = (3, 3)
+    cmake_version = GetCMakeVersion()
+    if not cmake_version:
+        PrintError("Failed to determine CMake version")
+        sys.exit(1)
+    if cmake_version < cmake_required_version:
+        PrintError(("CMake version 3.3 required to build OpenVDB, but version "
+                    "found was %s") % (".".join("%d" % v for v in cmake_version)))
+        sys.exit(1)
+
 if JPEG in requiredDependencies:
     # NASM is required to build libjpeg-turbo
     if (Windows() and not find_executable("nasm")):
@@ -1765,6 +1930,7 @@ Building with settings:
     Config                      {buildConfig}
     Imaging                     {buildImaging}
       Ptex support:             {enablePtex}
+      OpenVDB support:          {enableOpenVDB}
       OpenImageIO support:      {buildOIIO} 
       OpenColorIO support:      {buildOCIO} 
       PRMan support:            {buildPrman}
@@ -1775,8 +1941,8 @@ Building with settings:
     Tests                       {buildTests}
     Alembic Plugin              {buildAlembic}
       HDF5 support:             {enableHDF5}
+    Draco Plugin                {buildDraco}
     MaterialX Plugin            {buildMaterialX}
-    Maya Plugin                 {buildMaya}
     Katana Plugin               {buildKatana}
     Houdini Plugin              {buildHoudini}
 
@@ -1814,6 +1980,7 @@ summaryMsg = summaryMsg.format(
     buildConfig=("Debug" if context.buildDebug else "Release"),
     buildImaging=("On" if context.buildImaging else "Off"),
     enablePtex=("On" if context.enablePtex else "Off"),
+    enableOpenVDB=("On" if context.enableOpenVDB else "Off"),
     buildOIIO=("On" if context.buildOIIO else "Off"),
     buildOCIO=("On" if context.buildOCIO else "Off"),
     buildPrman=("On" if context.buildPrman else "Off"),
@@ -1823,9 +1990,9 @@ summaryMsg = summaryMsg.format(
     buildDocs=("On" if context.buildDocs else "Off"),
     buildTests=("On" if context.buildTests else "Off"),
     buildAlembic=("On" if context.buildAlembic else "Off"),
+    buildDraco=("On" if context.buildDraco else "Off"),
     buildMaterialX=("On" if context.buildMaterialX else "Off"),
     enableHDF5=("On" if context.enableHDF5 else "Off"),
-    buildMaya=("On" if context.buildMaya else "Off"),
     buildKatana=("On" if context.buildKatana else "Off"),
     buildHoudini=("On" if context.buildHoudini else "Off"))
 
@@ -1901,10 +2068,6 @@ Print("""
     The following in your PATH environment variable:
     {requiredInPath}
 """.format(requiredInPath="\n    ".join(sorted(requiredInPath))))
-
-if context.buildMaya:
-    Print("See documentation at http://openusd.org/docs/Maya-USD-Plugins.html "
-          "for setting up the Maya plugin.\n")
     
 if context.buildKatana:
     Print("See documentation at http://openusd.org/docs/Katana-USD-Plugins.html "

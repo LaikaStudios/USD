@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDXPRMAN_CONTEXT_H
-#define HDXPRMAN_CONTEXT_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_CONTEXT_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_CONTEXT_H
 
 #include "pxr/pxr.h"
 #include "pxr/base/gf/matrix4d.h"
@@ -62,7 +62,6 @@ struct HdxPrman_InteractiveContext : public HdPrman_Context
     // The viewport camera to use.
     // Updated from render pass state.
     riley::CameraId cameraId;
-    riley::ShadingNode cameraNode;
         
     // Count of scene lights.  Maintained by the delegate.
     int sceneLightCount;
@@ -97,4 +96,4 @@ private:
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDXPRMAN_CONTEXT_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_CONTEXT_H
