@@ -59,6 +59,10 @@ HdPrmanCamera::Sync(HdSceneDelegate *sceneDelegate,
     SdfPath const &id = GetId();
     HdDirtyBits& bits = *dirtyBits;
 
+    if (bits & DirtyViewMatrix) {
+        sceneDelegate->SampleTransform(id, &_sampleXforms);
+    }
+
     if (bits & DirtyParams) {
         TfToken params[] = {
             HdCameraTokens->horizontalAperture,
@@ -130,7 +134,9 @@ HdPrmanCamera::SetRileyCameraParams(RixParamList *camParams,
         float const *fStop =
             _GetDictItem<float>(_params, HdCameraTokens->fStop);
         if (fStop) {
-            projParams->SetFloat(RixStr.k_fStop, *fStop);
+            // RenderMan defines disabled DOF as fStop=inf not zero
+            float const value = (*fStop <= 0) ? RI_INFINITY : *fStop;
+            projParams->SetFloat(RixStr.k_fStop, value);
         }
 
         float const *focalLength =
@@ -171,17 +177,21 @@ HdPrmanCamera::SetRileyCameraParams(RixParamList *camParams,
             camParams->SetFloat(RixStr.k_farClip, clippingRange->GetMax());
         }
 
-        double const *shutterOpen =
-            _GetDictItem<double>(_params, HdCameraTokens->shutterOpen);
-        if (shutterOpen) {
-            camParams->SetFloat(RixStr.k_shutterOpenTime, *shutterOpen);
-        }
+        // XXX : Ideally we would want to set the proper shutter open and close,
+        // however we can not fully change the shutter without restarting
+        // Riley.
 
-        double const *shutterClose =
-            _GetDictItem<double>(_params, HdCameraTokens->shutterClose);
-        if (shutterClose) {
-            camParams->SetFloat(RixStr.k_shutterCloseTime, *shutterClose);
-        }
+        // double const *shutterOpen =
+        //     _GetDictItem<double>(_params, HdCameraTokens->shutterOpen);
+        // if (shutterOpen) {
+        //     camParams->SetFloat(RixStr.k_shutterOpenTime, *shutterOpen);
+        // }
+
+        // double const *shutterClose =
+        //     _GetDictItem<double>(_params, HdCameraTokens->shutterClose);
+        // if (shutterClose) {
+        //     camParams->SetFloat(RixStr.k_shutterCloseTime, *shutterClose);
+        // }
     }
 }
 

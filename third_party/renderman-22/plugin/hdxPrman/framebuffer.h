@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HD_PRMAN_FRAMEBUFFER_H
-#define HD_PRMAN_FRAMEBUFFER_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_FRAMEBUFFER_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_FRAMEBUFFER_H
 
 #include "pxr/pxr.h"
 
@@ -54,7 +54,7 @@ public:
     void Resize(int width, int height);
 
     std::mutex mutex;
-    std::vector<uint8_t> color;
+    std::vector<float> color;
     std::vector<float> depth;
     std::vector<int32_t> primId;
     std::vector<int32_t> instanceId;
@@ -67,7 +67,7 @@ public:
     GfMatrix4d proj;
 
     // Clear functionality.
-    uint8_t clearColor[4];
+    float clearColor[4];
     float clearDepth;
     int32_t clearId;
     bool pendingClear;

@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDXPRMAN_RENDERBUFFER_H
-#define HDXPRMAN_RENDERBUFFER_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_BUFFER_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_BUFFER_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/renderBuffer.h"
@@ -50,7 +50,7 @@ public:
     // HdPrman doesn't handle sampling decisions at the hydra level.
     virtual bool IsMultiSampled() const override { return false; }
 
-    virtual uint8_t* Map() override {
+    virtual void* Map() override {
         _mappers++;
         return _buffer.data();
     }
@@ -94,4 +94,4 @@ private:
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDXPRMAN_RENDERBUFFER_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HDX_PRMAN_RENDER_BUFFER_H

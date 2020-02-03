@@ -21,8 +21,8 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_RENDER_DELEGATE_H
-#define HDPRMAN_RENDER_DELEGATE_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_RENDER_DELEGATE_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_RENDER_DELEGATE_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/renderDelegate.h"
@@ -36,10 +36,20 @@ class HdPrman_RenderPass;
 struct HdPrman_Context;
 
 #define HDPRMAN_RENDER_SETTINGS_TOKENS \
-    (integrator)
+    (integrator)                       \
+    (interactiveIntegrator)            \
+    (interactiveIntegratorTimeout)
 
 TF_DECLARE_PUBLIC_TOKENS(HdPrmanRenderSettingsTokens, HDPRMAN_API,
     HDPRMAN_RENDER_SETTINGS_TOKENS);
+
+#define HDPRMAN_INTEGRATOR_TOKENS \
+    (PxrPathTracer)               \
+    (PbsPathTracer)               \
+    (PxrDirectLighting)
+
+TF_DECLARE_PUBLIC_TOKENS(HdPrmanIntegratorTokens, HDPRMAN_API,
+    HDPRMAN_INTEGRATOR_TOKENS);
 
 class HdPrmanRenderDelegate : public HdRenderDelegate {
 public:
@@ -110,4 +120,4 @@ protected: // data
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif // HDPRMAN_RENDER_DELEGATE_H
+#endif // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_RENDER_DELEGATE_H

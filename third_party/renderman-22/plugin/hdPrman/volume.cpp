@@ -86,7 +86,7 @@ HdPrman_Volume::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyVisibility
         | HdChangeTracker::DirtyPrimvar
         | HdChangeTracker::DirtyMaterialId
-        | HdChangeTracker::DirtyInstanceIndex
+        | HdChangeTracker::DirtyInstancer
         ;
 
     return (HdDirtyBits)mask;
@@ -112,7 +112,7 @@ HdPrman_Volume::_ConvertGeometry(HdPrman_Context *context,
     auto const& field = fields[0];
 
     VtValue filePath = sceneDelegate->Get(field.fieldId,
-                                          HdVolumeTokens->filePath);
+                                          HdFieldTokens->filePath);
     SdfAssetPath fileAssetPath = filePath.Get<SdfAssetPath>();
 
     int32_t const dims[] = { 0, 0, 0 };

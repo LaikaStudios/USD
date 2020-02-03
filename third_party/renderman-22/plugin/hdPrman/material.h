@@ -21,11 +21,12 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#ifndef HDPRMAN_MATERIAL_H
-#define HDPRMAN_MATERIAL_H
+#ifndef EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MATERIAL_H
+#define EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MATERIAL_H
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/hd/material.h"
+#include "hdPrman/matfiltFilterChain.h"
 #include "Riley.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -64,6 +65,15 @@ public:
 
     virtual void Finalize(HdRenderParam *renderParam) override;
 
+    /// Return the static list of tokens supported.
+    static TfTokenVector const& GetShaderSourceTypes();
+
+    /// Get material filtering chain.
+    static MatfiltFilterChain GetFilterChain();
+
+    /// Set material filtering chain.
+    static void SetFilterChain(MatfiltFilterChain const& chain);
+
 private:
     void _ResetMaterial(HdPrman_Context *context);
 
@@ -74,4 +84,4 @@ private:
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-#endif  // HDPRMAN_MATERIAL_H
+#endif  // EXT_RMANPKG_22_0_PLUGIN_RENDERMAN_PLUGIN_HD_PRMAN_MATERIAL_H
