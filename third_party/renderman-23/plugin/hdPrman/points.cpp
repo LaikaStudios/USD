@@ -39,9 +39,8 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-HdPrman_Points::HdPrman_Points(SdfPath const& id,
-                               SdfPath const& instancerId)
-    : BASE(id, instancerId)
+HdPrman_Points::HdPrman_Points(SdfPath const& id)
+    : BASE(id)
 {
 }
 
@@ -89,7 +88,7 @@ HdPrman_Points::_ConvertGeometry(HdPrman_Context *context,
 
     HdPrman_ConvertPrimvars(sceneDelegate, id, primvars, 1,
                             points.size(), points.size(), points.size());
-    return std::move(primvars);
+    return primvars;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

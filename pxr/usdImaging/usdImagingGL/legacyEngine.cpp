@@ -22,7 +22,7 @@
 // language governing permissions and limitations under the Apache License.
 //
 #include "pxr/pxr.h"
-#include "pxr/imaging/glf/glew.h"
+#include "pxr/imaging/garch/glApi.h"
 
 #include "pxr/usdImaging/usdImagingGL/legacyEngine.h"
 
@@ -61,6 +61,7 @@
 #include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/glf/glContext.h"
+#include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/info.h"
 
 // Mesh Topology
@@ -209,16 +210,6 @@ UsdImagingGLLegacyEngine::_PopulateBuffers()
     offset = 0;
     _AppendSubData<GLuint>(GL_ELEMENT_ARRAY_BUFFER, &offset, _verts);
     _AppendSubData<GLuint>(GL_ELEMENT_ARRAY_BUFFER, &offset, _lineVerts);
-}
-
-SdfPath
-UsdImagingGLLegacyEngine::GetRprimPathFromPrimId(int primId) const 
-{
-    _PrimIDMap::const_iterator it = _primIDMap.find(primId);
-    if(it != _primIDMap.end()) {
-        return it->second;
-    }
-    return SdfPath();
 }
 
 void
@@ -415,6 +406,7 @@ UsdImagingGLLegacyEngine::Render(const UsdPrim& root,
         // Will need to revisit this for semi-transparent geometry.
         glDisable( GL_ALPHA_TEST );
         glDisable( GL_BLEND );
+        glDisable( GL_SAMPLE_ALPHA_TO_COVERAGE );
         drawID = true;
     } else {
         glShadeModel(GL_SMOOTH);
@@ -461,6 +453,13 @@ UsdImagingGLLegacyEngine::Render(const UsdPrim& root,
         glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(.5, 1.0);
     }
+
+    // Clear the FBO with the bg color. This is necessary since when using
+    // Hydra, the aov is cleared to the bg color to aid compositing back to
+    // the FBO.
+    GfVec4f const &cc = _params.clearColor; // linear color
+    glClearColor(cc[0], cc[1], cc[2], cc[3]);
+    glClear(GL_COLOR_BUFFER_BIT);
 
     // Draw polygons & curves.
     _DrawPolygons(drawID);
@@ -1299,18 +1298,30 @@ UsdImagingGLLegacyEngine::_RenderPrimitive(const UsdPrim &prim,
     }
 }
 
+static GfVec3d
+_UnProject(
+    GfVec3d Pwin,
+    const GfMatrix4d &modelViewMatrix,
+    const GfMatrix4d &projMatrix,
+    const GfVec4i &viewport)
+{
+    GfVec3d Pndc(((Pwin[0] - viewport[0]) / viewport[2]) * 2.0 - 1.0,
+                 ((Pwin[1] - viewport[1]) / viewport[3]) * 2.0 - 1.0,
+                   Pwin[2] * 2.0 - 1.0);
+    GfMatrix4d MVP = modelViewMatrix * projMatrix;
+    return MVP.GetInverse().Transform(Pndc);
+}
+
 bool
 UsdImagingGLLegacyEngine::TestIntersection(
     const GfMatrix4d &viewMatrix,
     const GfMatrix4d &projectionMatrix,
-    const GfMatrix4d &worldToLocalSpace,
     const UsdPrim& root, 
     const UsdImagingGLRenderParams& params,
     GfVec3d *outHitPoint,
     SdfPath *outHitPrimPath,
     SdfPath *outHitInstancerPath,
-    int *outHitInstanceIndex,
-    int *outHitElementIndex)
+    int *outHitInstanceIndex)
 {
     // Choose a framebuffer that's large enough to catch thin slice polys.  No
     // need to go too large though, since the depth writes will accumulate to
@@ -1319,17 +1330,16 @@ UsdImagingGLLegacyEngine::TestIntersection(
     const int width = 128;
     const int height = width;
 
-    if (GlfHasLegacyGraphics()) {
-        TF_RUNTIME_ERROR("framebuffer object not supported");
-        return false;
-    }
-
     // Use a separate drawTarget (framebuffer object) for each GL context
     // that uses this renderer, but the drawTargets can share attachments.
-    
     GlfGLContextSharedPtr context = GlfGLContext::GetCurrentGLContext();
     if (!TF_VERIFY(context)) {
         TF_RUNTIME_ERROR("Invalid GL context");
+        return false;
+    }
+
+    if (GlfContextCaps::GetInstance().glVersion < 200) {
+        TF_RUNTIME_ERROR("framebuffer object not supported");
         return false;
     }
 
@@ -1352,8 +1362,6 @@ UsdImagingGLLegacyEngine::TestIntersection(
                 "primId", GL_RGBA, GL_UNSIGNED_BYTE, GL_RGBA8);
             drawTarget->AddAttachment(
                 "instanceId", GL_RGBA, GL_UNSIGNED_BYTE, GL_RGBA8);
-            drawTarget->AddAttachment(
-                "elementId", GL_RGBA, GL_UNSIGNED_BYTE, GL_RGBA8);
             drawTarget->AddAttachment(
                 "depth", GL_DEPTH_COMPONENT, GL_FLOAT, GL_DEPTH_COMPONENT32F);
             drawTarget->Unbind();
@@ -1391,9 +1399,6 @@ UsdImagingGLLegacyEngine::TestIntersection(
 
     glEnable(GL_DEPTH_TEST);
 
-    // Setup the modelview matrix
-    const GfMatrix4d modelViewMatrix = worldToLocalSpace * viewMatrix;
-
     // Set up camera matrices and viewport for picking.
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
@@ -1401,7 +1406,7 @@ UsdImagingGLLegacyEngine::TestIntersection(
     
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
-    glLoadMatrixd(modelViewMatrix.GetArray());
+    glLoadMatrixd(viewMatrix.GetArray());
    
     glViewport(0, 0, width, height);
 
@@ -1435,11 +1440,6 @@ UsdImagingGLLegacyEngine::TestIntersection(
         drawTarget->GetAttachments().at("instanceId")->GetGlTextureName());
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, instanceId);
 
-    GLubyte elementId[width*height*4];
-    glBindTexture(GL_TEXTURE_2D,
-        drawTarget->GetAttachments().at("elementId")->GetGlTextureName());
-    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, elementId);
-
     GLfloat depths[width*height];
     glBindTexture(GL_TEXTURE_2D,
         drawTarget->GetAttachments().at("depth")->GetGlTextureName());
@@ -1468,30 +1468,27 @@ UsdImagingGLLegacyEngine::TestIntersection(
     bool didHit = (zMin < 1.0);
 
     if (didHit) {
-        GLint viewport[4] = { 0, 0, width, height };
+        GfVec4i viewport = { 0, 0, width, height };
 
-        gluUnProject( xMin, yMin, zMin,
-                      viewMatrix.GetArray(),
-                      projectionMatrix.GetArray(),
-                      viewport,
-                      &((*outHitPoint)[0]),
-                      &((*outHitPoint)[1]),
-                      &((*outHitPoint)[2]));
+        *outHitPoint = _UnProject(
+                GfVec3d(xMin, yMin, zMin),
+                viewMatrix, projectionMatrix, viewport);
 
         if (outHitPrimPath) {
             int idIndex = zMinIndex*4;
 
-            *outHitPrimPath = GetRprimPathFromPrimId(
-                    HdxPickTask::DecodeIDRenderColor(&primId[idIndex]));
+            int primIdVal = HdxPickTask::DecodeIDRenderColor(&primId[idIndex]);
+            _PrimIDMap::const_iterator it = _primIDMap.find(primIdVal);
+            if(it != _primIDMap.end()) {
+                *outHitPrimPath = it->second;
+            } else {
+                *outHitPrimPath = SdfPath();
+            }
+
             if (outHitInstanceIndex) {
                 *outHitInstanceIndex = HdxPickTask::DecodeIDRenderColor(
                         &instanceId[idIndex]);
             }
-            if (outHitElementIndex) {
-                *outHitElementIndex = HdxPickTask::DecodeIDRenderColor(
-                        &elementId[idIndex]);
-            }
-
         }
     }
 

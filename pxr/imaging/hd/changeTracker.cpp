@@ -29,7 +29,6 @@
 
 #include "pxr/base/tf/debug.h"
 #include "pxr/base/tf/token.h"
-#include "pxr/base/tf/stackTrace.h"
 
 #include <iostream>
 #include <sstream>
@@ -44,8 +43,6 @@ HdChangeTracker::HdChangeTracker()
     , _bprimState()
     , _generalState()
     , _collectionState()
-    , _needsGarbageCollection(false)
-    , _needsBprimGarbageCollection(false)
     , _instancerRprimDependencies()
     , _instancerInstancerDependencies()
     // Note: Version numbers start at 1, with observers resetting theirs to 0.
@@ -58,7 +55,6 @@ HdChangeTracker::HdChangeTracker()
     , _sceneStateVersion(1)
     , _visChangeCount(1)
     , _renderTagVersion(1)
-    , _batchVersion(1)
 {
     /*NOTHING*/
 }
@@ -96,9 +92,6 @@ HdChangeTracker::RprimRemoved(SdfPath const& id)
 {
     TF_DEBUG(HD_RPRIM_REMOVED).Msg("Rprim Removed: %s\n", id.GetText());
     _rprimState.erase(id);
-    // Make sure cached DrawItems get flushed out and their buffers are
-    // reclaimed.
-    _needsGarbageCollection = true;
 
     ++_sceneStateVersion;
     ++_rprimIndexVersion;
@@ -216,10 +209,10 @@ HdChangeTracker::MarkRprimClean(SdfPath const& id, HdDirtyBits newBits)
 }
 
 void
-HdChangeTracker::InstancerInserted(SdfPath const& id)
+HdChangeTracker::InstancerInserted(SdfPath const& id, HdDirtyBits initialDirtyState)
 {
     TF_DEBUG(HD_INSTANCER_ADDED).Msg("Instancer Added: %s\n", id.GetText());
-    _instancerState[id] = AllDirty;
+    _instancerState[id] = initialDirtyState;
     ++_sceneStateVersion;
     ++_instancerIndexVersion;
 }
@@ -270,23 +263,22 @@ void
 HdChangeTracker::_AddDependency(HdChangeTracker::_DependencyMap &depMap,
         SdfPath const& parent, SdfPath const& child)
 {
-    depMap[parent].insert(child);
+    _DependencyMap::accessor a;
+    depMap.insert(a, parent);
+    a->second.insert(child);
 }
 
 void
 HdChangeTracker::_RemoveDependency(HdChangeTracker::_DependencyMap &depMap,
         SdfPath const& parent, SdfPath const& child)
 {
-    _DependencyMap::iterator it = depMap.find(parent);
-    if (!TF_VERIFY(it != depMap.end()))
+    _DependencyMap::accessor a;
+    if(!depMap.find(a, parent)) {
         return;
-
-    SdfPathSet &childSet = it->second;
-    TF_VERIFY(childSet.erase(child) != 0);
-
-    if (childSet.empty())
-    {
-        depMap.erase(it);
+    }
+    a->second.erase(child);
+    if (a->second.empty()) {
+        depMap.erase(a);
     }
 }
 
@@ -393,32 +385,45 @@ HdChangeTracker::MarkInstancerDirty(SdfPath const& id, HdDirtyBits bits)
     // scale, translate, rotate primvars and there's no dependency between them
     // unlike points and normals on rprim.
 
-#if 0
     // Early out if no new bits are being set.
-    // XXX: First, we need to get rid of the usage of DirtyInstancer
-    // in usdImaging.
     if ((bits & (~it->second)) == 0) {
         return;
     }
-#endif
 
     it->second = it->second | bits;
     ++_sceneStateVersion;
 
+    // We propagate dirty bits as follows:
+    // * -> DirtyInstancer.
+    // DirtyInstanceIndex -> DirtyInstanceIndex.
+    // DirtyTransform -> DirtyTransform.
+    //
+    // Both DirtyInstanceIndex and DirtyTransform are consumed at the rprim
+    // level, so this gives the rprim a signal that upstream instancer data
+    // relevant to transform composition or instance indices has changed.
+    // XXX: The DirtyTransform dependency here is technically an hdSt dependency
+    // and we should find a better way to express it, although it won't harm
+    // other known backends.
+    HdDirtyBits toPropagate = DirtyInstancer;
+    if (bits & DirtyTransform) {
+        toPropagate |= DirtyTransform;
+    }
+    if (bits & DirtyInstanceIndex) {
+        toPropagate |= DirtyInstanceIndex;
+    }
+
     // Now mark any associated rprims or instancers dirty.
-    _DependencyMap::iterator instancerDepIt =
-        _instancerInstancerDependencies.find(id);
-    if (instancerDepIt != _instancerInstancerDependencies.end()) {
-        for (SdfPath const& dep : instancerDepIt->second) {
-            MarkInstancerDirty(dep, DirtyInstancer);
+    _DependencyMap::const_accessor aII;
+    if (_instancerInstancerDependencies.find(aII, id)) {
+        for (SdfPath const& dep : aII->second) {
+            MarkInstancerDirty(dep, toPropagate);
         }
     }
 
-    _DependencyMap::iterator rprimDepIt =
-        _instancerRprimDependencies.find(id);
-    if (rprimDepIt != _instancerRprimDependencies.end()) {
-        for (SdfPath const& dep : rprimDepIt->second) {
-            MarkRprimDirty(dep, DirtyInstancer);
+    _DependencyMap::const_accessor aIR;
+    if (_instancerRprimDependencies.find(aIR, id)) {
+        for (SdfPath const& dep : aIR->second) {
+            MarkRprimDirty(dep, toPropagate);
         }
     }
 }
@@ -452,8 +457,6 @@ HdChangeTracker::SprimRemoved(SdfPath const& id)
 {
     TF_DEBUG(HD_SPRIM_REMOVED).Msg("Sprim Removed: %s\n", id.GetText());
     _sprimState.erase(id);
-    // Make sure sprim resources are reclaimed.
-    _needsGarbageCollection = true;
     ++_sceneStateVersion;
     ++_sprimIndexVersion;
 }
@@ -509,7 +512,6 @@ HdChangeTracker::BprimRemoved(SdfPath const& id)
 {
     TF_DEBUG(HD_BPRIM_REMOVED).Msg("Bprim Removed: %s\n", id.GetText());
     _bprimState.erase(id);
-    _needsBprimGarbageCollection = true;
     ++_sceneStateVersion;
     ++_bprimIndexVersion;
 }
@@ -926,18 +928,6 @@ HdChangeTracker::GetVisibilityChangeCount() const
 }
 
 void
-HdChangeTracker::MarkBatchesDirty()
-{
-    ++_batchVersion;
-}
-
-unsigned
-HdChangeTracker::GetBatchVersion() const
-{
-    return _batchVersion;
-}
-
-void
 HdChangeTracker::AddState(TfToken const& name)
 {
     _GeneralStateMap::iterator it = _generalState.find(name);
@@ -1041,8 +1031,20 @@ HdChangeTracker::StringifyDirtyBits(HdDirtyBits dirtyBits)
     if (dirtyBits & DirtyRepr) {
         ss << "Repr ";
     }
+    if (dirtyBits & DirtyRenderTag) {
+        ss << "RenderTag ";
+    }
+    if (dirtyBits & DirtyComputationPrimvarDesc) {
+        ss << "ComputationPrimvarDesc ";
+    }
     if (dirtyBits & DirtyCategories) {
         ss << "Categories ";
+    }
+    if (dirtyBits & DirtyVolumeField) {
+        ss << "VolumeField ";
+    }
+    if (dirtyBits & NewRepr) {
+        ss << "NewRepr ";
     }
     if (dirtyBits & ~AllSceneDirtyBits) {
         ss << "CustomBits:";

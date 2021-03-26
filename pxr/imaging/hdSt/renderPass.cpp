@@ -21,17 +21,15 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#include "pxr/imaging/glf/glew.h"
-
 #include "pxr/imaging/hdSt/renderPass.h"
 
 #include "pxr/imaging/glf/contextCaps.h"
-#include "pxr/imaging/glf/glContext.h"
 
 #include "pxr/imaging/hdSt/debugCodes.h"
 #include "pxr/imaging/hdSt/glUtils.h"
 #include "pxr/imaging/hdSt/indirectDrawBatch.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
+#include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/renderPassShader.h"
 #include "pxr/imaging/hdSt/renderPassState.h"
 
@@ -40,18 +38,50 @@
 #include "pxr/imaging/hdSt/shaderCode.h"
 #include "pxr/imaging/hdSt/tokens.h"
 
-#include "pxr/imaging/hgi/immediateCommandBuffer.h"
-#include "pxr/imaging/hgi/graphicsEncoder.h"
-#include "pxr/imaging/hgi/graphicsEncoderDesc.h"
+#include "pxr/imaging/hgi/graphicsCmds.h"
+#include "pxr/imaging/hgi/graphicsCmdsDesc.h"
+#include "pxr/imaging/hgi/hgi.h"
+#include "pxr/imaging/hgi/tokens.h"
 
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
 
 #include "pxr/base/gf/frustum.h"
 
-#include "pxr/imaging/glf/diagnostic.h"
+
+// XXX We do not want to include specific HgiXX backends, but we need to do
+// this temporarily until Storm has transitioned fully to Hgi.
+#include "pxr/imaging/hgiGL/graphicsCmds.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
+
+void
+_ExecuteDraw(
+    HdStCommandBuffer* cmdBuffer,
+    HdStRenderPassStateSharedPtr const& stRenderPassState,
+    HdStResourceRegistrySharedPtr const& resourceRegistry)
+{
+    cmdBuffer->ExecuteDraw(stRenderPassState, resourceRegistry);
+}
+
+unsigned int
+_GetDrawBatchesVersion(HdRenderIndex *renderIndex)
+{
+    HdStRenderParam *stRenderParam = static_cast<HdStRenderParam*>(
+        renderIndex->GetRenderDelegate()->GetRenderParam());
+
+    return stRenderParam->GetDrawBatchesVersion();
+}
+
+unsigned int
+_GetMaterialTagsVersion(HdRenderIndex *renderIndex)
+{
+    HdStRenderParam *stRenderParam = static_cast<HdStRenderParam*>(
+        renderIndex->GetRenderDelegate()->GetRenderParam());
+
+    return stRenderParam->GetMaterialTagsVersion();
+}
+
 
 HdSt_RenderPass::HdSt_RenderPass(HdRenderIndex *index,
                                  HdRprimCollection const &collection)
@@ -59,12 +89,13 @@ HdSt_RenderPass::HdSt_RenderPass(HdRenderIndex *index,
     , _lastSettingsVersion(0)
     , _useTinyPrimCulling(false)
     , _collectionVersion(0)
+    , _materialTagsVersion(0)
     , _collectionChanged(false)
     , _drawItemCount(0)
     , _drawItemsChanged(false)
     , _hgi(nullptr)
 {
-    HdStRenderDelegate* renderDelegate = 
+    HdStRenderDelegate* renderDelegate =
         static_cast<HdStRenderDelegate*>(index->GetRenderDelegate());
     _hgi = renderDelegate->GetHgi();
 }
@@ -88,6 +119,77 @@ HdSt_RenderPass::_Prepare(TfTokenVector const &renderTags)
     _PrepareDrawItems(renderTags);
 }
 
+static
+const GfVec3i &
+_GetFramebufferSize(const HgiGraphicsCmdsDesc &desc)
+{
+    for (const HgiTextureHandle &color : desc.colorTextures) {
+        return color->GetDescriptor().dimensions;
+    }
+    if (desc.depthTexture) {
+        return desc.depthTexture->GetDescriptor().dimensions;
+    }
+    
+    static const GfVec3i fallback(0);
+    return fallback;
+}
+
+static
+GfVec4i
+_FlipViewport(const GfVec4i &viewport,
+              const GfVec3i &framebufferSize)
+{
+    const int height = framebufferSize[1];
+    if (height > 0) {
+        return GfVec4i(viewport[0],
+                       height - (viewport[1] + viewport[3]),
+                       viewport[2],
+                       viewport[3]);
+    } else {
+        return viewport;
+    }
+}
+
+static
+GfVec4i
+_ToVec4i(const GfVec4f &v)
+{
+    return GfVec4i(int(v[0]), int(v[1]), int(v[2]), int(v[3]));
+}
+
+static
+GfVec4i
+_ToVec4i(const GfRect2i &r)
+{
+    return GfVec4i(r.GetMinX(),  r.GetMinY(),
+                   r.GetWidth(), r.GetHeight());
+}
+
+static
+GfVec4i
+_ComputeViewport(HdRenderPassStateSharedPtr const &renderPassState,
+                 const HgiGraphicsCmdsDesc &desc,
+                 const bool flip)
+{
+    const CameraUtilFraming &framing = renderPassState->GetFraming();
+    if (framing.IsValid()) {
+        // Use data window for clients using the new camera framing
+        // API.
+        const GfVec4i viewport = _ToVec4i(framing.dataWindow);
+        if (flip) {
+            // Note that in OpenGL, the coordinates for the viewport
+            // are y-Up but the camera framing is y-Down.
+            return _FlipViewport(viewport, _GetFramebufferSize(desc));
+        } else {
+            return viewport;
+        }
+    }
+
+    // For clients not using the new camera framing API, fallback
+    // to the viewport they specified.
+    return _ToVec4i(renderPassState->GetViewport());
+}
+
 void
 HdSt_RenderPass::_Execute(HdRenderPassStateSharedPtr const &renderPassState,
                           TfTokenVector const& renderTags)
@@ -97,57 +199,67 @@ HdSt_RenderPass::_Execute(HdRenderPassStateSharedPtr const &renderPassState,
 
     // Downcast render pass state
     HdStRenderPassStateSharedPtr stRenderPassState =
-        boost::dynamic_pointer_cast<HdStRenderPassState>(
+        std::dynamic_pointer_cast<HdStRenderPassState>(
         renderPassState);
     TF_VERIFY(stRenderPassState);
 
+    // Validate and update draw batches.
     _PrepareCommandBuffer(renderTags);
-    
+
     // CPU frustum culling (if chosen)
-    _Cull(stRenderPassState);
+    _FrustumCullCPU(stRenderPassState);
 
     // Downcast the resource registry
     HdStResourceRegistrySharedPtr const& resourceRegistry = 
-        boost::dynamic_pointer_cast<HdStResourceRegistry>(
+        std::dynamic_pointer_cast<HdStResourceRegistry>(
         GetRenderIndex()->GetResourceRegistry());
     TF_VERIFY(resourceRegistry);
 
-    // XXX Non-Hgi tasks expect default FB. Remove once all tasks use Hgi.
-    GLint fb;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
-
-    // Create graphics encoder to render into Aovs.
-    HgiGraphicsEncoderDesc desc = stRenderPassState->MakeGraphicsEncoderDesc();
-    HgiImmediateCommandBuffer& icb = _hgi->GetImmediateCommandBuffer();
-    HgiGraphicsEncoderUniquePtr gfxEncoder = icb.CreateGraphicsEncoder(desc);
-
-    GfVec4i vp;
-
-    // XXX Some tasks do not yet use Aov, so gfx encoder might be null
-    if (gfxEncoder) {
-        gfxEncoder->PushDebugGroup(__ARCH_PRETTY_FUNCTION__);
-
-        // XXX The application may have directly called into glViewport.
-        // We need to remove the offset to avoid double offset when we composite
-        // the Aov back into the client framebuffer.
-        // E.g. UsdView CameraMask.
-        glGetIntegerv(GL_VIEWPORT, vp.data());
-        GfVec4i aovViewport(0, 0, vp[2]+vp[0], vp[3]+vp[1]);
-        gfxEncoder->SetViewport(aovViewport);
-    }
-
-    // Draw
     _cmdBuffer.PrepareDraw(stRenderPassState, resourceRegistry);
-    _cmdBuffer.ExecuteDraw(stRenderPassState, resourceRegistry);
 
-    if (gfxEncoder) {
-        gfxEncoder->SetViewport(vp);
-        gfxEncoder->PopDebugGroup();
-        gfxEncoder->EndEncoding();
-
-        // XXX Non-Hgi tasks expect default FB. Remove once all tasks use Hgi.
-        glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    // Create graphics work to render into aovs.
+    const HgiGraphicsCmdsDesc desc =
+        stRenderPassState->MakeGraphicsCmdsDesc(GetRenderIndex());
+    HgiGraphicsCmdsUniquePtr gfxCmds = _hgi->CreateGraphicsCmds(desc);
+    if (!TF_VERIFY(gfxCmds)) {
+        return;
     }
+    HdRprimCollection const &collection = GetRprimCollection();
+    std::string passName = "HdSt_RenderPass: " +
+        collection.GetMaterialTag().GetString();
+    gfxCmds->PushDebugGroup(passName.c_str());
+
+    gfxCmds->SetViewport(
+        _ComputeViewport(
+            renderPassState,
+            desc,
+            /* flip = */ _hgi->GetAPIName() == HgiTokens->OpenGL));
+
+    HdStCommandBuffer* cmdBuffer = &_cmdBuffer;
+    HgiGLGraphicsCmds* glGfxCmds = 
+        dynamic_cast<HgiGLGraphicsCmds*>(gfxCmds.get());
+
+    // XXX: The Bind/Unbind calls below set/restore GL state.
+    // This will be reworked to use Hgi.
+    stRenderPassState->Bind();
+
+    if (glGfxCmds) {
+        // XXX Tmp code path to allow non-hgi code to insert functions into
+        // HgiGL ops-stack. Will be removed once Storms uses Hgi everywhere
+        auto executeDrawOp = [cmdBuffer, stRenderPassState, resourceRegistry] {
+            _ExecuteDraw(cmdBuffer, stRenderPassState, resourceRegistry);
+        };
+        glGfxCmds->InsertFunctionOp(executeDrawOp);
+    } else {
+        _ExecuteDraw(cmdBuffer, stRenderPassState, resourceRegistry);
+    }
+
+    if (gfxCmds) {
+        gfxCmds->PopDebugGroup();
+        _hgi->SubmitCmds(gfxCmds.get());
+    }
+
+    stRenderPassState->Unbind();
 }
 
 void
@@ -162,7 +274,6 @@ void
 HdSt_RenderPass::_PrepareDrawItems(TfTokenVector const& renderTags)
 {
     HD_TRACE_FUNCTION();
-    GLF_GROUP_FUNCTION();
 
     HdChangeTracker const &tracker = GetRenderIndex()->GetChangeTracker();
     HdRprimCollection const &collection = GetRprimCollection();
@@ -173,20 +284,40 @@ HdSt_RenderPass::_PrepareDrawItems(TfTokenVector const& renderTags)
     const int renderTagVersion =
         tracker.GetRenderTagVersion();
 
+    const unsigned int materialTagsVersion =
+        _GetMaterialTagsVersion(GetRenderIndex());
+
     const bool collectionChanged = _collectionChanged ||
         (_collectionVersion != collectionVersion);
 
     const bool renderTagsChanged = _renderTagVersion != renderTagVersion;
 
-    if (collectionChanged || renderTagsChanged) {
+    const bool materialTagsChanged =
+        _materialTagsVersion != materialTagsVersion;
+
+    if (collectionChanged || renderTagsChanged || materialTagsChanged) {
         HD_PERF_COUNTER_INCR(HdPerfTokens->collectionsRefreshed);
-        TF_DEBUG(HD_COLLECTION_CHANGED).Msg("CollectionChanged: %s "
-                                            "(repr = %s)"
-                                            "version: %d -> %d\n", 
-                                             collection.GetName().GetText(),
-                                             collection.GetReprSelector().GetText(),
-                                             _collectionVersion,
-                                             collectionVersion);
+
+        if (TfDebug::IsEnabled(HDST_DRAW_ITEM_GATHER)) {
+            if (collectionChanged) {
+                TfDebug::Helper::Msg(
+                    "CollectionChanged: %s (repr = %s, version = %d -> %d)\n",
+                        collection.GetName().GetText(),
+                        collection.GetReprSelector().GetText(),
+                        _collectionVersion,
+                        collectionVersion);
+            }
+
+            if (renderTagsChanged) {
+                TfDebug::Helper::Msg("RenderTagsChanged (version = %d -> %d)\n",
+                        _renderTagVersion, renderTagVersion);
+            }
+            if (materialTagsChanged) {
+                TfDebug::Helper::Msg(
+                    "MaterialTagsChanged (version = %d -> %d)\n",
+                    _materialTagsVersion, materialTagsVersion);
+            }
+        }
 
         _drawItems = GetRenderIndex()->GetDrawItems(collection, renderTags);
         _drawItemCount = _drawItems.size();
@@ -196,6 +327,7 @@ HdSt_RenderPass::_PrepareDrawItems(TfTokenVector const& renderTags)
         _collectionChanged = false;
 
         _renderTagVersion = renderTagVersion;
+        _materialTagsVersion = materialTagsVersion;
     }
 }
 
@@ -203,16 +335,14 @@ void
 HdSt_RenderPass::_PrepareCommandBuffer(TfTokenVector const& renderTags)
 {
     HD_TRACE_FUNCTION();
-    GLF_GROUP_FUNCTION();
 
     // -------------------------------------------------------------------
     // SCHEDULE PREPARATION
     // -------------------------------------------------------------------
-    // We know what must be drawn and that the stream needs to be updated, 
+    // We know what must be drawn and that the stream needs to be updated,
     // so iterate over each prim, cull it and schedule it to be drawn.
 
-    HdChangeTracker const &tracker = GetRenderIndex()->GetChangeTracker();
-    const int batchVersion = tracker.GetBatchVersion();
+    const int batchVersion = _GetDrawBatchesVersion(GetRenderIndex());
 
     // It is optional for a render task to call RenderPass::Prepare() to
     // update the drawItems during the prepare phase. We ensure our drawItems
@@ -250,7 +380,7 @@ HdSt_RenderPass::_PrepareCommandBuffer(TfTokenVector const& renderTags)
 }
 
 void
-HdSt_RenderPass::_Cull(
+HdSt_RenderPass::_FrustumCullCPU(
     HdStRenderPassStateSharedPtr const &renderPassState)
 {
     // This process should be moved to HdSt_DrawBatch::PrepareDraw
@@ -259,7 +389,7 @@ HdSt_RenderPass::_Cull(
     GlfContextCaps const &caps = GlfContextCaps::GetInstance();
     HdChangeTracker const &tracker = GetRenderIndex()->GetChangeTracker();
 
-    const bool 
+    const bool
        skipCulling = TfDebug::IsEnabled(HDST_DISABLE_FRUSTUM_CULLING) ||
            (caps.multiDrawIndirectEnabled
                && HdSt_IndirectDrawBatch::IsEnabledGPUFrustumCulling());
@@ -274,7 +404,7 @@ HdSt_RenderPass::_Cull(
     }
     else {
         if (!freezeCulling) {
-            // Re-cull the command buffer. 
+            // Re-cull the command buffer.
             _cmdBuffer.FrustumCull(renderPassState->GetCullMatrix());
         }
 

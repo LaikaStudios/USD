@@ -21,14 +21,17 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#include "pxr/imaging/glf/glew.h"
+#include "pxr/imaging/garch/glApi.h"
 
 #include "pxr/imaging/hdSt/geometricShader.h"
 
 #include "pxr/imaging/hdSt/debugCodes.h"
+#include "pxr/imaging/hdSt/shaderKey.h"
+#include "pxr/imaging/hdSt/resourceBinder.h"
 
 #include "pxr/imaging/hd/binding.h"
 #include "pxr/imaging/hd/perfLog.h"
+#include "pxr/imaging/hd/renderPassState.h"
 #include "pxr/imaging/hd/tokens.h"
 
 #include "pxr/imaging/hio/glslfx.h"
@@ -44,6 +47,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 HdSt_GeometricShader::HdSt_GeometricShader(std::string const &glslfxString,
                                        PrimitiveType primType,
                                        HdCullStyle cullStyle,
+                                       bool useHardwareFaceCulling,
+                                       bool hasMirroredTransform,
+                                       bool doubleSided,
                                        HdPolygonMode polygonMode,
                                        bool cullingPass,
                                        SdfPath const &debugId,
@@ -51,9 +57,12 @@ HdSt_GeometricShader::HdSt_GeometricShader(std::string const &glslfxString,
     : HdStShaderCode()
     , _primType(primType)
     , _cullStyle(cullStyle)
+    , _useHardwareFaceCulling(useHardwareFaceCulling)
+    , _hasMirroredTransform(hasMirroredTransform)
+    , _doubleSided(doubleSided)
     , _polygonMode(polygonMode)
     , _lineWidth(lineWidth)
-    , _cullingPass(cullingPass)
+    , _frustumCullingPass(cullingPass)
     , _hash(0)
 {
     HD_TRACE_FUNCTION();
@@ -104,11 +113,79 @@ HdSt_GeometricShader::BindResources(const int program,
                                     HdSt_ResourceBinder const &binder,
                                     HdRenderPassState const &state)
 {
-    if (_cullStyle != HdCullStyleDontCare) {
-        unsigned int cullStyle = _cullStyle;
-        binder.BindUniformui(HdShaderTokens->cullStyle, 1, &cullStyle);
+    if (_useHardwareFaceCulling) {
+        switch (_cullStyle) {
+            case HdCullStyleFront:
+                glEnable(GL_CULL_FACE);
+                if (_hasMirroredTransform) {
+                    glCullFace(GL_BACK);
+                } else {
+                    glCullFace(GL_FRONT);
+                }
+                break;
+            case HdCullStyleFrontUnlessDoubleSided:
+                if (!_doubleSided) {
+                    glEnable(GL_CULL_FACE);
+                    if (_hasMirroredTransform) {
+                        glCullFace(GL_BACK);
+                    } else {
+                        glCullFace(GL_FRONT);
+                    }
+                }
+                break;
+            case HdCullStyleBack:
+                glEnable(GL_CULL_FACE);
+                if (_hasMirroredTransform) {
+                    glCullFace(GL_FRONT);
+                } else {
+                    glCullFace(GL_BACK);
+                }
+                break;
+            case HdCullStyleBackUnlessDoubleSided:
+                if (!_doubleSided) {
+                    glEnable(GL_CULL_FACE);
+                    if (_hasMirroredTransform) {
+                        glCullFace(GL_FRONT);
+                    } else {
+                        glCullFace(GL_BACK);
+                    }
+                }
+                break;
+            case HdCullStyleNothing:
+                glDisable(GL_CULL_FACE);
+                break;
+            case HdCullStyleDontCare:
+            default:
+                // Fallback to the renderPass opinion, but account for 
+                // combinations of parameters that require extra handling
+                HdCullStyle cullstyle = state.GetCullStyle();
+                if (_doubleSided && 
+                   (cullstyle == HdCullStyleBackUnlessDoubleSided || 
+                    cullstyle == HdCullStyleFrontUnlessDoubleSided)) {
+                    glDisable(GL_CULL_FACE);
+                } else if (_hasMirroredTransform && 
+                    (cullstyle == HdCullStyleBack || 
+                     cullstyle == HdCullStyleBackUnlessDoubleSided)) {
+                    glEnable(GL_CULL_FACE);
+                    glCullFace(GL_FRONT);
+                } else if (_hasMirroredTransform && 
+                    (cullstyle == HdCullStyleFront ||
+                     cullstyle == HdCullStyleFrontUnlessDoubleSided)) {
+                    glEnable(GL_CULL_FACE);
+                    glCullFace(GL_BACK);
+                } 
+                break;
+        }
     } else {
-        // don't care -- use renderPass's fallback
+        // Use fragment shader culling via discard.
+        glDisable(GL_CULL_FACE);
+
+        if (_cullStyle != HdCullStyleDontCare) {
+            unsigned int cullStyle = _cullStyle;
+            binder.BindUniformui(HdShaderTokens->cullStyle, 1, &cullStyle);
+        } else {
+            // don't care -- use renderPass's fallback
+        }
     }
 
     if (GetPrimitiveMode() == GL_PATCHES) {
@@ -130,6 +207,26 @@ HdSt_GeometricShader::UnbindResources(const int program,
 {
     if (_polygonMode == HdPolygonModeLine) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
+
+    // Restore renderPass culling opinions
+    HdCullStyle cullstyle = state.GetCullStyle();
+    switch (cullstyle) {
+        case HdCullStyleFront:
+        case HdCullStyleFrontUnlessDoubleSided:
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);
+            break;
+        case HdCullStyleBack:
+        case HdCullStyleBackUnlessDoubleSided:
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            break;
+        case HdCullStyleNothing:
+        case HdCullStyleDontCare:
+        default:
+            glDisable(GL_CULL_FACE);
+            break;
     }
 }
 
@@ -238,6 +335,34 @@ HdSt_GeometricShader::GetNumPrimitiveVertsForGeometryShader() const
     }
 
     return numPrimVerts;
+}
+
+/*static*/
+ HdSt_GeometricShaderSharedPtr
+ HdSt_GeometricShader::Create(
+     HdSt_ShaderKey const &shaderKey, 
+    HdStResourceRegistrySharedPtr const &resourceRegistry)
+{
+    // Use the shaderKey hash to deduplicate geometric shaders.
+    HdInstance<HdSt_GeometricShaderSharedPtr> geometricShaderInstance =
+        resourceRegistry->RegisterGeometricShader(shaderKey.ComputeHash());
+
+    if (geometricShaderInstance.IsFirstInstance()) {
+        geometricShaderInstance.SetValue(
+            HdSt_GeometricShaderSharedPtr(
+                new HdSt_GeometricShader(
+                    shaderKey.GetGlslfxString(),
+                    shaderKey.GetPrimitiveType(),
+                    shaderKey.GetCullStyle(),
+                    shaderKey.UseHardwareFaceCulling(),
+                    shaderKey.HasMirroredTransform(),
+                    shaderKey.IsDoubleSided(),
+                    shaderKey.GetPolygonMode(),
+                    shaderKey.IsFrustumCullingPass(),
+                    /*debugId=*/SdfPath(),
+                    shaderKey.GetLineWidth())));
+    }
+    return geometricShaderInstance.GetValue();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

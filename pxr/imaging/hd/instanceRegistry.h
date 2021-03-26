@@ -30,9 +30,9 @@
 #include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hf/perfLog.h"
 
-#include <boost/shared_ptr.hpp>
 #include <tbb/concurrent_unordered_map.h>
 
+#include <memory>
 #include <mutex>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -87,7 +87,7 @@ public:
     /// held in a registry container.
     explicit HdInstance(KeyType const &key,
                         ValueType const &value,
-                        RegistryLock registryLock,
+                        RegistryLock &&registryLock,
                         Dictionary *container)
         : _key(key)
         , _value(value)
@@ -178,11 +178,13 @@ public:
     const_iterator begin() const { return _dictionary.begin(); }
     const_iterator end() const { return _dictionary.end(); }
 
+    size_t size() const { return _dictionary.size(); }
+
     void Invalidate();
 
 private:
     template <typename T>
-    static bool _IsUnique(boost::shared_ptr<T> const &value) {
+    static bool _IsUnique(std::shared_ptr<T> const &value) {
         return value.unique();
     }
 

@@ -49,12 +49,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 static inline bool _IsValidIdentifier(TfToken const &name);
 
-static VtValue
-_CastFromSdfPathToTfToken(const VtValue &val)
-{
-    return VtValue(val.Get<SdfPath>().GetToken());
-}
-
 // XXX: Enable this define to make bad path strings
 // cause runtime errors.  This can be useful when trying to track down cases
 // of bad path strings originating from python code.
@@ -65,16 +59,6 @@ TF_REGISTRY_FUNCTION(TfType)
     TfType::Define<SdfPath>();
     TfType::Define< vector<SdfPath> >()
         .Alias(TfType::GetRoot(), "vector<SdfPath>");    
-}
-
-// Register with VtValue that SdfPaths can be cast to TfTokens.  The only
-// reason we need this is because we need to cast AnimSplines that contain
-// SdfPaths to ones that contain TfTokens, and we need that to succeed.  The
-// only reason we need that, is in execution we can't use SdfPaths directly
-// due to performance and threadsafety reasons.
-TF_REGISTRY_FUNCTION(VtValue)
-{
-    VtValue::RegisterCast<SdfPath, TfToken>(&_CastFromSdfPathToTfToken);
 }
 
 SdfPath::SdfPath(const std::string &path) {
@@ -140,6 +124,12 @@ bool
 SdfPath::IsAbsolutePath() const
 {
     return _primPart && _primPart->IsAbsolutePath();
+}
+
+bool
+SdfPath::IsAbsoluteRootPath() const
+{
+    return !_propPart && _primPart && _primPart->IsAbsoluteRoot();
 }
 
 bool
@@ -287,6 +277,21 @@ SdfPath::IsExpressionPath() const {
     return false;
 }
 
+TfToken
+SdfPath::GetAsToken() const
+{
+    if (_primPart) {
+        return Sdf_PathNode::GetPathAsToken(_primPart.get(), _propPart.get());
+    }
+    return TfToken();
+}
+
+std::string
+SdfPath::GetAsString() const
+{
+    return GetAsToken().GetString();
+}
+
 TfToken const &
 SdfPath::GetToken() const
 {
@@ -333,6 +338,12 @@ SdfPath::GetPrefixes(SdfPathVector *prefixes) const
         *iter++ = SdfPath(prim, prop);
         prim = prim->GetParentNode();
     }
+}
+
+SdfPathAncestorsRange
+SdfPath::GetAncestorsRange() const
+{
+    return SdfPathAncestorsRange(*this);
 }
 
 const std::string &
@@ -486,27 +497,30 @@ SdfPath::GetParentPath() const {
     }
 
     // If this is a property-like path, trim that first.
-    if (Sdf_PathNode const *propNode = _propPart.get()) {
-        propNode = propNode->GetParentNode();
+    if (_propPart) {
+        Sdf_PathNode const *propNode = _propPart.get()->GetParentNode();
         return SdfPath(_primPart, Sdf_PathPropNodeHandle(propNode));
     }
     
-    // This is a prim-like path.  If this prim path is '.' or ends with '..',
-    // the "parent" path is made by appending a '..' component.
+    // This is a prim-like path.  If this is an absolute path (most common case)
+    // then it's just the parent path node.  On the other hand if this path is a
+    // relative path, and is '.' or ends with '..', the logical parent path is
+    // made by appending a '..' component.
     //
     // XXX: NOTE that this is NOT the way that that Sdf_PathNode::GetParentNode
     // works, and note that most of the code in SdfPath uses GetParentNode
     // intentionally.
     Sdf_PathNode const *primNode = _primPart.get();
-    if (ARCH_UNLIKELY(
-            primNode == Sdf_PathNode::GetRelativeRootNode() || 
-            primNode->GetName() == SdfPathTokens->parentPathElement)) {
-        return SdfPath(Sdf_PathNode::FindOrCreatePrim(
-                           primNode, SdfPathTokens->parentPathElement),
-                       Sdf_PathPropNodeHandle());
-    } else {
+    if (ARCH_LIKELY(
+            primNode->IsAbsolutePath() ||
+            (primNode != Sdf_PathNode::GetRelativeRootNode() && 
+             primNode->GetName() != SdfPathTokens->parentPathElement))) {
         return SdfPath(primNode->GetParentNode(), nullptr);
     }
+    // Is relative root, or ends with '..'.
+    return SdfPath(Sdf_PathNode::FindOrCreatePrim(
+                       primNode, SdfPathTokens->parentPathElement),
+                   Sdf_PathPropNodeHandle());
 }
 
 SdfPath
@@ -605,12 +619,12 @@ SdfPath::AppendPath(const SdfPath &newSuffix) const {
     }
     if (newSuffix == EmptyPath()) {
         TF_CODING_ERROR("Cannot append invalid path to <%s>",
-                        GetString().c_str());
+                        GetAsString().c_str());
         return EmptyPath();
     }
     if (newSuffix.IsAbsolutePath()) {
         TF_WARN("Cannot append absolute path <%s> to another path <%s>.",
-                newSuffix.GetString().c_str(), GetString().c_str());
+                newSuffix.GetAsString().c_str(), GetAsString().c_str());
         return EmptyPath();
     }
     if (newSuffix == ReflexiveRelativePath()) {
@@ -901,12 +915,12 @@ SdfPath
 SdfPath::AppendMapper(const SdfPath &targetPath) const {
     if (!IsPropertyPath()) {
         TF_WARN("Cannnot append mapper '%s' to non-property path <%s>.",
-                targetPath.GetString().c_str(), GetString().c_str());
+                targetPath.GetAsString().c_str(), GetAsString().c_str());
         return EmptyPath();
     }
     if (targetPath == EmptyPath()) {
         TF_WARN("Cannot append an empty mapper target path to <%s>",
-                GetString().c_str());
+                GetAsString().c_str());
         return EmptyPath();
     }
     return SdfPath { _primPart, 
@@ -1464,65 +1478,62 @@ SdfPath::ReplaceTargetPath(const SdfPath &newTargetPath) const {
 SdfPath
 SdfPath::MakeAbsolutePath(const SdfPath & anchor) const {
 
+    SdfPath result;
+
     if (anchor == SdfPath()) {
         TF_WARN("MakeAbsolutePath(): anchor is the empty path.");
-        return SdfPath();
+        return result;
     }
 
     // Check that anchor is an absolute path
     if (!anchor.IsAbsolutePath()) {
         TF_WARN("MakeAbsolutePath() requires an absolute path as an argument.");
-        return SdfPath();
+        return result;
     }
 
     // Check that anchor is a prim-like path
     if (!anchor.IsAbsoluteRootOrPrimPath() && 
         !anchor.IsPrimVariantSelectionPath()) {
         TF_WARN("MakeAbsolutePath() requires a prim path as an argument.");
-        return SdfPath();
+        return result;
     }
 
-    // If we're invalid, just return a copy of ourselves.
-    if (IsEmpty())
-        return *this;
-
-    SdfPath result = *this;
+    // If we're empty, just return empty.
+    if (IsEmpty()) {
+        return result;
+    }
 
     // If we're not already absolute, do our own path using anchor as the
     // relative base.
-    if (!IsAbsolutePath()) {
-        // This list winds up in reverse order to what one might at
-        // first expect.
-        vector<Sdf_PathNode const *> relNodes;
+    if (ARCH_LIKELY(!IsAbsolutePath())) {
 
-        Sdf_PathNode const *relRoot = Sdf_PathNode::GetRelativeRootNode();
+        // Collect all the ancestral path nodes.
         Sdf_PathNode const *curNode = _primPart.get();
-        // Walk up looking for oldPrefix node.
-        while (curNode) {
-            if (curNode == relRoot) {
-                break;
-            }
-            relNodes.push_back(curNode);
+        size_t numNodes = curNode->GetElementCount();
+        vector<Sdf_PathNode const *> relNodes(numNodes);
+        while (numNodes--) {
+            relNodes[numNodes] = curNode;
             curNode = curNode->GetParentNode();
         }
-        if (!curNode) {
-            // Didn't find relative root
-            // should never get here since all relative paths should have a
-            // relative root node
-            // CODE_COVERAGE_OFF
-            TF_CODING_ERROR("Didn't find relative root");
-            return SdfPath();
-            // CODE_COVERAGE_ON
-        }
 
+        // Now append all the nodes to the anchor to produce the absolute path.
         result = anchor;
-
-        // Got the list, now add nodes similar to relNodes to anchor
-        // relNodes needs to be iterated in reverse since the closest ancestor
-        // node was pushed on last.
-        for (auto it = relNodes.rbegin(); it != relNodes.rend(); ++it) {
-            result = _AppendNode(result, *it);
+        for (Sdf_PathNode const *node: relNodes) {
+            result = _AppendNode(result, node);
+            if (result.IsEmpty()) {
+                break;
+            }
         }
+    }
+    else {
+        result = *this;
+    }
+
+    // If we failed to produce a path, return empty.  This happens in cases
+    // where we try to make paths like '../../..' absolute with anchors that are
+    // shorter, causing us to try to go "outside the root".
+    if (result.IsEmpty()) {
+        return result;
     }
 
     // Tack on any property path.
@@ -1562,7 +1573,7 @@ SdfPath::MakeRelativePath(const SdfPath & anchor) const
         !anchor.IsPrimVariantSelectionPath()) {
         TF_WARN("MakeRelativePath() requires a prim, prim variant selection, "
                 "or absolute root path as an anchor (got '%s').",
-                 anchor.GetString().c_str());
+                 anchor.GetAsString().c_str());
         return SdfPath();
     }
 
@@ -1885,17 +1896,27 @@ SdfPath::IsValidPathString(const std::string &pathString,
 static inline bool
 _LessThanCompareNodes(Sdf_PathNode const *l, Sdf_PathNode const *r)
 {
-    size_t lCount = l->GetElementCount();
-    size_t rCount = r->GetElementCount();
+    // Internally element counts are 'short', so this cast is safe.
+    int lCount = static_cast<int>(l->GetElementCount());
+    int rCount = static_cast<int>(r->GetElementCount());
     
-    // walk up to the same depth
-    size_t upSteps = lCount > rCount ? lCount - rCount : 0;
-    while (upSteps--) {
-        l = l->GetParentNode();
+    // Since caller ensures both absolute or both relative, then if either has
+    // no elements, it's the root node.  l is less than r if l is the root and r
+    // is not.
+    if (!lCount || !rCount) {
+        return !lCount && rCount;
     }
-    upSteps = rCount > lCount ? rCount - lCount : 0;
-    while (upSteps--) {
+
+    int diff = rCount - lCount;
+
+    // walk up to the same depth
+    while (diff < 0) {
+        l = l->GetParentNode();
+        ++diff;
+    }
+    while (diff > 0) {
         r = r->GetParentNode();
+        --diff;
     }
     
     // Now the cur nodes are at the same depth in the node tree
@@ -1919,17 +1940,15 @@ _LessThanCompareNodes(Sdf_PathNode const *l, Sdf_PathNode const *r)
 bool
 SdfPath::_LessThanInternal(SdfPath const &lhs, SdfPath const &rhs)
 {
-    SdfPath const &absRoot = SdfPath::AbsoluteRootPath();
-
     Sdf_PathNode const *lNode = lhs._primPart.get();
     Sdf_PathNode const *rNode = rhs._primPart.get();
 
-    if (lNode->IsAbsolutePath() != rNode->IsAbsolutePath()) {
-        return lNode->IsAbsolutePath();
-    } else if (lhs == absRoot) {
-        return true;
-    } else if (rhs == absRoot) {
-        return false;
+    bool lIsAbs = lNode->IsAbsolutePath();
+    bool rIsAbs = rNode->IsAbsolutePath();
+
+    // Absolute paths are less than all relative paths.
+    if (lIsAbs != rIsAbs) {
+        return lIsAbs;
     }
 
     // If there is a difference in prim part, it's more significant than the
@@ -2088,8 +2107,31 @@ SdfPathFindLongestStrictPrefix(std::set<SdfPath> const &set,
     return Sdf_PathFindLongestPrefixImpl<
         typename std::set<SdfPath>::const_iterator,
         std::set<SdfPath> const &>(set, path, /*strictPrefix=*/true);
+}
 
+SdfPathAncestorsRange::iterator&
+SdfPathAncestorsRange::iterator::operator++()
+{
+    if (!_path.IsEmpty()) {
+        const Sdf_PathNode* propPart = nullptr;
+        const Sdf_PathNode* primPart = nullptr;
+        if (ARCH_UNLIKELY(_path._propPart)) {
+            propPart = _path._propPart->GetParentNode();
+            primPart = _path._primPart.get();
+        } else if (_path._primPart && _path._primPart->GetElementCount() > 1) {
+            primPart = _path._primPart->GetParentNode();
+        }
+        _path = SdfPath(primPart, propPart);
+    }
+    return *this;
+}
 
+SDF_API std::ptrdiff_t
+distance(const SdfPathAncestorsRange::iterator& first,
+         const SdfPathAncestorsRange::iterator& last)
+{
+    return (static_cast<std::ptrdiff_t>(first->GetPathElementCount()) -
+            static_cast<std::ptrdiff_t>(last->GetPathElementCount()));
 }
 
 

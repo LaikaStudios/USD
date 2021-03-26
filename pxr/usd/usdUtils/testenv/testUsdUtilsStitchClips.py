@@ -22,6 +22,8 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 
+from __future__ import print_function
+
 from pxr import Sdf, Tf, UsdUtils, Vt, Gf
 import unittest
 
@@ -68,7 +70,8 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
             rootLayer = Sdf.Layer.FindOrOpen(self.baseName)
             self.rootLayer = rootLayer if rootLayer else Sdf.Layer.CreateNew(self.baseName)
             UsdUtils.StitchClips(self.rootLayer, self.layerFileNames[0:7], 
-                                 self.clipPath, self.startTimeCode, self.endTimeCode)
+                                 self.clipPath, self.startTimeCode, self.endTimeCode,
+                                 interpolateMissingClipValues=True)
 
         self.setupComplete = True
 
@@ -81,7 +84,8 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
                          set(['default']))
         self.assertEqual(set(clipPrim.GetInfo('clips')['default'].keys()),
                          set(['times', 'assetPaths', 'primPath', 
-                              'manifestAssetPath', 'active']))
+                              'manifestAssetPath', 'active',
+                              'interpolateMissingClipValues']))
 
     def test_ValidUsdLayerGeneration(self):
         self.assertTrue(self.rootLayer)
@@ -99,11 +103,11 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
                            for i in self.layerFileNames]
 
         UsdUtils.StitchClips(rootLayer, localLayerNames, self.clipPath)
-        assetPaths = (
-            rootLayer.GetPrimAtPath(self.clipPath).GetInfo('clipAssetPaths'))
+        prim = rootLayer.GetPrimAtPath(self.clipPath)
+        assetPaths = prim.GetInfo('clips')['default']['assetPaths']
 
         # ensure all paths are relative
-        import itertools
+        self.assertEqual(len(assetPaths), 32)
         self.assertTrue(not any([os.path.isabs(i.path) for i in assetPaths]))
 
     # This test ensures that we are grabbing our frame data from
@@ -132,7 +136,7 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
         try:
             UsdUtils.StitchClips(rootLayer, self.layerFileNames, clipPath)
         except Tf.ErrorException as tfError:
-            print "Caught expected exception %s" %tfError
+            print("Caught expected exception %s" %tfError)
         else:
             self.assertTrue(False, "Failed to raise runtime error on unwritable file." )
         finally:
@@ -170,8 +174,9 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
         
         resultLayer = Sdf.Layer.CreateNew('foo.usd')
         topLayer = Sdf.Layer.CreateNew('foo.topology.usd')
-        UsdUtils.StitchClipsTemplate(resultLayer, topLayer, self.clipPath,
-                                     'asset.#.usd', 101, 120, 1)
+        manifestLayer = Sdf.Layer.CreateNew('foo.manifest.usd')
+        UsdUtils.StitchClipsTemplate(resultLayer, topLayer, manifestLayer,
+                                     self.clipPath, 'asset.#.usd', 101, 120, 1)
         self.assertEqual(list(resultLayer.subLayerPaths), 
                          ['./foo.topology.usd'])
  
@@ -189,8 +194,12 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
         # template case
         resultLayer = Sdf.Layer.CreateNew('customSetName.usd')
         topLayer = Sdf.Layer.CreateNew('customSetName.topology.usd')
-        UsdUtils.StitchClipsTemplate(resultLayer, topLayer, self.clipPath,
-                                     'asset.#.usd', 101, 120, 1, 0.3, 'bob')
+        manifestLayer = Sdf.Layer.CreateNew('customSetName.manifest.usd')
+        UsdUtils.StitchClipsTemplate(resultLayer, topLayer, manifestLayer,
+                                     self.clipPath,
+                                     'asset.#.usd', 101, 120, 1, 0.3, 
+                                     interpolateMissingClipValues=True,
+                                     clipSet='bob')
         self.assertEqual(list(resultLayer.subLayerPaths),
                          ['./customSetName.topology.usd'])
         self.assertEqual(resultLayer.endTimeCode, 120)
@@ -203,7 +212,8 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
                           'templateActiveOffset': 0.3,
                           'primPath': '/World/fx/Particles_Splash', 
                           'templateAssetPath': 'asset.#.usd', 
-                          'templateEndTime': 120.0}
+                          'templateEndTime': 120.0,
+                          'interpolateMissingClipValues': True}
 
         # Ensure that our custom set name applied
         actualValues = prim.GetInfo('clips')['bob']
@@ -241,7 +251,7 @@ class TestUsdUtilsStitchClips(unittest.TestCase):
                                      (105.0, 105.0), 
                                      (106.0, 106.0), 
                                      (107.0, 107.0)]), 
-                          'manifestAssetPath': Sdf.AssetPath('./customSetNameNonTemplate.topology.usd'), 
+                          'manifestAssetPath': Sdf.AssetPath('./customSetNameNonTemplate.manifest.usd'), 
                           'assetPaths': Sdf.AssetPathArray(
                                         [Sdf.AssetPath('./src/Particles_Splash.101.usd'), 
                                          Sdf.AssetPath('./src/Particles_Splash.102.usd'), 

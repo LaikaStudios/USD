@@ -21,53 +21,61 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 #
-from qt import QtCore, QtGui, QtWidgets
+from __future__ import print_function
+
+from .qt import QtCore, QtGui, QtWidgets
 import os, time, sys, platform, math
 from pxr import Ar, Tf, Sdf, Kind, Usd, UsdGeom, UsdShade
-from customAttributes import CustomAttribute
-from constantGroup import ConstantGroup
+from .customAttributes import CustomAttribute
+from pxr.UsdUtils.constantsGroup import ConstantsGroup
 
 DEBUG_CLIPPING = "USDVIEWQ_DEBUG_CLIPPING"
 
-class ClearColors(ConstantGroup):
+class ClearColors(ConstantsGroup):
     """Names of available background colors."""
     BLACK = "Black"
     DARK_GREY = "Grey (Dark)"
     LIGHT_GREY = "Grey (Light)"
     WHITE = "White"
 
-class HighlightColors(ConstantGroup):
+class DefaultFontFamily(ConstantsGroup):
+    """Names of the default font family and monospace font family to be used
+    with usdview"""
+    FONT_FAMILY = "Roboto"
+    MONOSPACE_FONT_FAMILY = "Roboto Mono"
+
+class HighlightColors(ConstantsGroup):
     """Names of available highlight colors for selected objects."""
     WHITE = "White"
     YELLOW = "Yellow"
     CYAN = "Cyan"
 
-class UIBaseColors(ConstantGroup):
+class UIBaseColors(ConstantsGroup):
     RED = QtGui.QBrush(QtGui.QColor(230, 132, 131))
     LIGHT_SKY_BLUE = QtGui.QBrush(QtGui.QColor(135, 206, 250))
     DARK_YELLOW = QtGui.QBrush(QtGui.QColor(222, 158, 46))
 
-class UIPrimTypeColors(ConstantGroup):
+class UIPrimTypeColors(ConstantsGroup):
     HAS_ARCS = UIBaseColors.DARK_YELLOW
     NORMAL = QtGui.QBrush(QtGui.QColor(227, 227, 227))
     INSTANCE = UIBaseColors.LIGHT_SKY_BLUE
-    MASTER = QtGui.QBrush(QtGui.QColor(118, 136, 217))
+    PROTOTYPE = QtGui.QBrush(QtGui.QColor(118, 136, 217))
 
-class UIPrimTreeColors(ConstantGroup):
+class UIPrimTreeColors(ConstantsGroup):
     SELECTED = QtGui.QBrush(QtGui.QColor(189, 155, 84))
     SELECTED_HOVER = QtGui.QBrush(QtGui.QColor(227, 186, 101))
     ANCESTOR_OF_SELECTED = QtGui.QBrush(QtGui.QColor(189, 155, 84, 50))
     ANCESTOR_OF_SELECTED_HOVER = QtGui.QBrush(QtGui.QColor(189, 155, 84, 100))
     UNSELECTED_HOVER = QtGui.QBrush(QtGui.QColor(70, 70, 70))
 
-class UIPropertyValueSourceColors(ConstantGroup):
+class UIPropertyValueSourceColors(ConstantsGroup):
     FALLBACK = UIBaseColors.DARK_YELLOW
     TIME_SAMPLE = QtGui.QBrush(QtGui.QColor(177, 207, 153))
     DEFAULT = UIBaseColors.LIGHT_SKY_BLUE
     NONE = QtGui.QBrush(QtGui.QColor(140, 140, 140))
     VALUE_CLIPS = QtGui.QBrush(QtGui.QColor(230, 150, 230))
 
-class UIFonts(ConstantGroup):
+class UIFonts(ConstantsGroup):
     # Font constants.  We use font in the prim browser to distinguish
     # "resolved" prim specifier
     # XXX - the use of weight here may need to be revised depending on font family
@@ -96,10 +104,10 @@ class UIFonts(ConstantGroup):
     INHERITED.setWeight(QtGui.QFont.Normal)
     INHERITED.setItalic(True)
 
-class KeyboardShortcuts(ConstantGroup):
+class KeyboardShortcuts(ConstantsGroup):
     FramingKey = QtCore.Qt.Key_F
 
-class PropertyViewIndex(ConstantGroup):
+class PropertyViewIndex(ConstantsGroup):
     TYPE, NAME, VALUE = range(3)
 
 ICON_DIR_ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'icons')
@@ -116,7 +124,7 @@ def _DeferredIconLoad(path):
         _icons[fullPath] = icon
     return icon
 
-class PropertyViewIcons(ConstantGroup):
+class PropertyViewIcons(ConstantsGroup):
     ATTRIBUTE                  = lambda: _DeferredIconLoad('usd-attr-plain-icon.png')
     ATTRIBUTE_WITH_CONNECTIONS = lambda: _DeferredIconLoad('usd-attr-with-conn-icon.png')
     RELATIONSHIP               = lambda: _DeferredIconLoad('usd-rel-plain-icon.png')
@@ -125,7 +133,7 @@ class PropertyViewIcons(ConstantGroup):
     CONNECTION                 = lambda: _DeferredIconLoad('usd-conn-icon.png')
     COMPOSED                   = lambda: _DeferredIconLoad('usd-cmp-icon.png')
 
-class PropertyViewDataRoles(ConstantGroup):
+class PropertyViewDataRoles(ConstantsGroup):
     ATTRIBUTE = "Attr"
     RELATIONSHIP = "Rel"
     ATTRIBUTE_WITH_CONNNECTIONS = "Attr_"
@@ -134,7 +142,7 @@ class PropertyViewDataRoles(ConstantGroup):
     CONNECTION = "Conn"
     COMPOSED = "Cmp"
 
-class RenderModes(ConstantGroup):
+class RenderModes(ConstantsGroup):
     # Render modes
     WIREFRAME = "Wireframe"
     WIREFRAME_ON_SURFACE = "WireframeOnSurface"
@@ -146,7 +154,7 @@ class RenderModes(ConstantGroup):
     GEOM_SMOOTH = "Geom Smooth"
     HIDDEN_SURFACE_WIREFRAME = "Hidden Surface Wireframe"
 
-class ShadedRenderModes(ConstantGroup):
+class ShadedRenderModes(ConstantsGroup):
     # Render modes which use shading
     SMOOTH_SHADED = RenderModes.SMOOTH_SHADED
     FLAT_SHADED = RenderModes.FLAT_SHADED
@@ -154,31 +162,32 @@ class ShadedRenderModes(ConstantGroup):
     GEOM_FLAT = RenderModes.GEOM_FLAT
     GEOM_SMOOTH = RenderModes.GEOM_SMOOTH
 
-class ColorCorrectionModes(ConstantGroup):
+class ColorCorrectionModes(ConstantsGroup):
     # Color correction used when render is presented to screen
     # These strings should match HdxColorCorrectionTokens
     DISABLED = "disabled"
     SRGB = "sRGB"
     OPENCOLORIO = "openColorIO"
 
-class PickModes(ConstantGroup):
+class PickModes(ConstantsGroup):
     # Pick modes
     PRIMS = "Prims"
     MODELS = "Models"
     INSTANCES = "Instances"
+    PROTOTYPES = "Prototypes"
 
-class SelectionHighlightModes(ConstantGroup):
+class SelectionHighlightModes(ConstantsGroup):
     # Selection highlight modes
     NEVER = "Never"
     ONLY_WHEN_PAUSED = "Only when paused"
     ALWAYS = "Always"
 
-class CameraMaskModes(ConstantGroup):
+class CameraMaskModes(ConstantsGroup):
     NONE = "none"
     PARTIAL = "partial"
     FULL = "full"
 
-class IncludedPurposes(ConstantGroup):
+class IncludedPurposes(ConstantsGroup):
     DEFAULT = UsdGeom.Tokens.default_
     PROXY = UsdGeom.Tokens.proxy
     GUIDE = UsdGeom.Tokens.guide
@@ -207,33 +216,55 @@ def ColorizeLabelText(text, substring, r, g, b):
 
 def PrintWarning(title, description):
     msg = sys.stderr
-    print >> msg, "------------------------------------------------------------"
-    print >> msg, "WARNING: %s" % title
-    print >> msg, description
-    print >> msg, "------------------------------------------------------------"
+    print("------------------------------------------------------------", file=msg)
+    print("WARNING: %s" % title, file=msg)
+    print(description, file=msg)
+    print("------------------------------------------------------------", file=msg)
 
-def GetValueAtFrame(prop, frame):
+def GetValueAndDisplayString(prop, time):
+    """If `prop` is a timeSampled Sdf.AttributeSpec, compute a string specifying
+    how many timeSamples it possesses.  Otherwise, compute the single default
+    value, or targets for a relationship, or value at 'time' for a
+    Usd.Attribute.  Return a tuple of a parameterless function that returns the
+    resolved value at 'time', and the computed brief string for display.  We
+    return a value-producing function rather than the value itself because for
+    an Sdf.AttributeSpec with multiple timeSamples, the resolved value is
+    *all* of the timeSamples, which can be expensive to compute, and is
+    rarely needed.
+    """
+    def _ValAndStr(val): 
+        return (lambda: val, GetShortStringForValue(prop, val))
+
     if isinstance(prop, Usd.Relationship):
-        return prop.GetTargets()
+        return _ValAndStr(prop.GetTargets())
     elif isinstance(prop, (Usd.Attribute, CustomAttribute)):
-        return prop.Get(frame)
+        return _ValAndStr(prop.Get(time))
     elif isinstance(prop, Sdf.AttributeSpec):
-        if frame == Usd.TimeCode.Default():
-            return prop.default
+        if time == Usd.TimeCode.Default():
+            return _ValAndStr(prop.default)
         else:
-            numTimeSamples = -1
-            if prop.HasInfo('timeSamples'):
-                numTimeSamples = prop.layer.GetNumTimeSamplesForPath(prop.path)
-            if numTimeSamples == -1:
-                return prop.default
-            elif numTimeSamples == 1:
-                return "1 time sample"
+            numTimeSamples = prop.layer.GetNumTimeSamplesForPath(prop.path)
+            if numTimeSamples == 0:
+                return _ValAndStr(prop.default)
             else:
-                return str(numTimeSamples) + " time samples"
-    elif isinstance(prop, Sdf.RelationshipSpec):
-        return prop.targetPathList
+                def _GetAllTimeSamples(attrSpec):
+                    l = attrSpec.layer
+                    p = attrSpec.path
+                    ordinates = l.ListTimeSamplesForPath(p)
+                    return [(o, l.QueryTimeSample(p, o)) for o in ordinates]
 
-    return val
+                if numTimeSamples == 1:
+                    valStr = "1 time sample"
+                else:
+                    valStr = str(numTimeSamples) + " time samples"
+                    
+                return (lambda prop=prop: _GetAllTimeSamples(prop), valStr)
+
+    elif isinstance(prop, Sdf.RelationshipSpec):
+        return _ValAndStr(prop.targetPathList)
+    
+    return (lambda: None, "unrecognized property type")
+
 
 def GetShortStringForValue(prop, val):
     if isinstance(prop, Usd.Relationship):
@@ -248,7 +279,7 @@ def GetShortStringForValue(prop, val):
     if val is None:
         return ''
     
-    from scalarTypes import GetScalarTypeFromAttr
+    from .scalarTypes import GetScalarTypeFromAttr
     scalarType, isArray = GetScalarTypeFromAttr(prop)
     result = ''
     if isArray and not isinstance(val, Sdf.ValueBlock):
@@ -362,7 +393,7 @@ def _AddSubLayers(layer, layerOffset, prefix, parentLayer, layers):
             addedPrefix = "     "
             _AddSubLayers(subLayer, offset, addedPrefix + prefix, layer, layers)
         else:
-            print "Could not find layer " + l
+            print("Could not find layer " + l)
 
 def GetRootLayerStackInfo(layer):
     layers = []
@@ -404,7 +435,7 @@ class Timer(object):
         self.interval = self._end - self._start
 
     def PrintTime(self, action):
-        print "Time to %s: %2.3fs" % (action, self.interval)
+        print("Time to %s: %2.3fs" % (action, self.interval))
 
 
 class BusyContext(object):
@@ -531,8 +562,8 @@ def GetAssetCreationTime(primStack, assetIdentifier):
         definingFile = definingLayer.realPath
     else:
         definingFile = primStack[-1].layer.realPath
-        print "Warning: Could not find expected asset-defining layer for %s" %\
-            assetIdentifier
+        print("Warning: Could not find expected asset-defining layer for %s" %
+            assetIdentifier)
 
     if Ar.IsPackageRelativePath(definingFile):
         definingFile = Ar.SplitPackageRelativePathOuter(definingFile)[0]
@@ -573,12 +604,12 @@ def DumpMallocTags(stage, contextStr):
         statsFile.close()
         reportName = statsFile.name
         callTree.Report(reportName)
-        print "Memory consumption of %s for %s is %d Mb" % (contextStr,
+        print("Memory consumption of %s for %s is %d Mb" % (contextStr,
                                                             layerName,
-                                                            memInMb)
-        print "For detailed analysis, see " + reportName
+                                                            memInMb))
+        print("For detailed analysis, see " + reportName)
     else:
-        print "Unable to accumulate memory usage since the Pxr MallocTag system was not initialized"
+        print("Unable to accumulate memory usage since the Pxr MallocTag system was not initialized")
 
 def GetInstanceIdForIndex(prim, instanceIndex, time):
     '''Attempt to find an authored Id value for the instance at index

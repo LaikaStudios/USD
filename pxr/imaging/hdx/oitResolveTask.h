@@ -29,19 +29,18 @@
 #include "pxr/imaging/hdx/version.h"
 #include "pxr/imaging/hd/task.h"
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
 class HdSceneDelegate;
 
-typedef boost::shared_ptr<class HdStRenderPassState>
-    HdStRenderPassStateSharedPtr;
-typedef boost::shared_ptr<class HdRenderPass>
-    HdRenderPassSharedPtr;
-typedef boost::shared_ptr<class HdStRenderPassShader>
-    HdStRenderPassShaderSharedPtr;
+using HdStRenderPassStateSharedPtr = std::shared_ptr<class HdStRenderPassState>;
+
+using HdRenderPassSharedPtr = std::shared_ptr<class HdRenderPass>;
+using HdStRenderPassShaderSharedPtr =
+    std::shared_ptr<class HdStRenderPassShader>;
 
 /// \class HdxOitResolveTask
 ///
@@ -62,26 +61,26 @@ public:
     HdxOitResolveTask(HdSceneDelegate* delegate, SdfPath const& id);
 
     HDX_API
-    virtual ~HdxOitResolveTask();
+    ~HdxOitResolveTask() override;
 
     /// Sync the resolve pass resources
     HDX_API
-    virtual void Sync(HdSceneDelegate* delegate,
-                      HdTaskContext* ctx,
-                      HdDirtyBits* dirtyBits) override;
+    void Sync(HdSceneDelegate* delegate,
+              HdTaskContext* ctx,
+              HdDirtyBits* dirtyBits) override;
 
     /// Prepare the tasks resources
     ///
     /// Allocates OIT buffers if requested by OIT render task
     HDX_API
-    virtual void Prepare(HdTaskContext* ctx,
-                         HdRenderIndex* renderIndex) override;
+    void Prepare(HdTaskContext* ctx,
+                 HdRenderIndex* renderIndex) override;
 
     /// Execute render pass task
     ///
     /// Resolves OIT buffers
     HDX_API
-    virtual void Execute(HdTaskContext* ctx) override;
+    void Execute(HdTaskContext* ctx) override;
 
 private:
     HdxOitResolveTask() = delete;

@@ -298,6 +298,14 @@ _FindType(const std::string& typeName)
     return SdfSchema::GetInstance().FindType(typeName);
 }
 
+boost::python::tuple
+_ConvertToValidMetadataDictionary(VtDictionary dict)
+{
+    std::string errMsg;
+    bool success = SdfConvertToValidMetadataDictionary(&dict, &errMsg);
+    return boost::python::make_tuple(success, dict, errMsg);
+}
+
 } // anonymous namespace 
 
 void wrapTypes()
@@ -322,6 +330,9 @@ void wrapTypes()
     def( "GetTypeForValueTypeName", &SdfGetTypeForValueTypeName );
     def( "GetValueTypeNameForValue", &SdfGetValueTypeNameForValue );
 
+    def( "ConvertToValidMetadataDictionary",
+         &_ConvertToValidMetadataDictionary );
+
     def( "GetUnitFromName", &SdfGetUnitFromName,
          return_value_policy<return_by_value>() );
     def( "GetNameForUnit", &SdfGetNameForUnit,
@@ -340,12 +351,14 @@ void wrapTypes()
     TfPyWrapEnum<SdfSpecifier>();
     TfPyWrapEnum<SdfVariability>();
     TfPyWrapEnum<SdfSpecType>();
+    TfPyWrapEnum<SdfAuthoringError>();
 
     VtValueFromPython<SdfListOpType>();
     VtValueFromPython<SdfPermission>();
     VtValueFromPython<SdfSpecifier>();
     VtValueFromPython<SdfVariability>();
     VtValueFromPython<SdfSpecType>();
+    VtValueFromPython<SdfAuthoringError>();
 
     // Wrap all units enums.
     #define _WRAP_ENUM(r, unused, elem)                     \

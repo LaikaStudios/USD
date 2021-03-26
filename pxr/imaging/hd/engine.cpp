@@ -24,6 +24,7 @@
 #include "pxr/imaging/hd/engine.h"
 
 #include "pxr/imaging/hd/debugCodes.h"
+#include "pxr/imaging/hd/driver.h"
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/renderDelegate.h"
@@ -50,7 +51,7 @@ HdEngine::~HdEngine()
 }
 
 void 
-HdEngine::SetTaskContextData(const TfToken &id, VtValue &data)
+HdEngine::SetTaskContextData(const TfToken &id, const VtValue &data)
 {
     // See if the token exists in the context and if not add it.
     std::pair<HdTaskContext::iterator, bool> result =
@@ -61,6 +62,22 @@ HdEngine::SetTaskContextData(const TfToken &id, VtValue &data)
     }
 }
 
+bool
+HdEngine::GetTaskContextData(const TfToken &id, VtValue *data) const
+{
+    if (!TF_VERIFY(data)) {
+        return false;
+    }
+
+    auto const& it = _taskContext.find(id);
+    if (it != _taskContext.end()) {
+        *data = it->second;
+        return true;
+    }
+
+    return false;
+}
+
 void
 HdEngine::RemoveTaskContextData(const TfToken &id)
 {
@@ -68,13 +85,24 @@ HdEngine::RemoveTaskContextData(const TfToken &id)
 }
 
 void
+HdEngine::ClearTaskContextData()
+{
+    _taskContext.clear();
+}
+
+void
 HdEngine::Execute(HdRenderIndex *index, HdTaskSharedPtrVector *tasks)
 {
+    TRACE_FUNCTION();
+
     if ((index == nullptr) || (tasks == nullptr)) {
         TF_CODING_ERROR("Passed nullptr to HdEngine::Execute()");
         return;
     }
 
+    // Some render tasks may need access to the same rendering context / driver
+    // as the render delegate. For example some tasks use Hgi.
+    _taskContext[HdTokens->drivers] = VtValue(index->GetDrivers());
 
     // --------------------------------------------------------------------- //
     // DATA DISCOVERY PHASE
@@ -159,42 +187,4 @@ HdEngine::Execute(HdRenderIndex *index, HdTaskSharedPtrVector *tasks)
     }
 }
 
-void
-HdEngine::ReloadAllShaders(HdRenderIndex& index)
-{
-    HdChangeTracker &tracker = index.GetChangeTracker();
-
-    // 1st dirty all rprims, so they will trigger shader reload
-    tracker.MarkAllRprimsDirty(HdChangeTracker::AllDirty);
-
-    // Dirty all materials
-    SdfPathVector materials = index.GetSprimSubtree(HdPrimTypeTokens->material,
-                                                    SdfPath::AbsoluteRootPath());
-
-    for (SdfPathVector::iterator materialIt  = materials.begin();
-                                 materialIt != materials.end();
-                               ++materialIt) {
-
-        HdMaterial* material = static_cast<HdMaterial*>(
-            index.GetSprim(HdPrimTypeTokens->material, *materialIt));
-        material->Reload();
-
-        tracker.MarkSprimDirty(*materialIt, HdChangeTracker::AllDirty);
-    }
-
-    // Invalidate shader cache in Resource Registry.
-    index.GetResourceRegistry()->InvalidateShaderRegistry();
-
-    // Fallback material
-    HdMaterial *material = static_cast<HdMaterial *>(
-                        index.GetFallbackSprim(HdPrimTypeTokens->material));
-    material->Reload();
-
-    // Note: Several Shaders are not currently captured in this
-    // - Lighting Shaders
-    // - Render Pass Shaders
-    // - Culling Shader
-}
-
 PXR_NAMESPACE_CLOSE_SCOPE
-

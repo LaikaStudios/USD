@@ -31,10 +31,9 @@
 #include "pxr/base/vt/dictionary.h"
 #include "pxr/base/tf/token.h"
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
-
 
 class SdfPath;
 class HdRprim;
@@ -44,17 +43,20 @@ class HdSceneDelegate;
 class HdRenderIndex;
 class HdRenderPass;
 class HdInstancer;
+class HdDriver;
 
-typedef boost::shared_ptr<class HdRenderPass> HdRenderPassSharedPtr;
-typedef boost::shared_ptr<class HdRenderPassState> HdRenderPassStateSharedPtr;
-typedef boost::shared_ptr<class HdResourceRegistry> HdResourceRegistrySharedPtr;
+using HdRenderPassSharedPtr = std::shared_ptr<class HdRenderPass>;
+using HdRenderPassStateSharedPtr = std::shared_ptr<class HdRenderPassState>;
+using HdResourceRegistrySharedPtr = std::shared_ptr<class HdResourceRegistry>;
+using HdDriverVector = std::vector<HdDriver*>;
 
 ///
 /// The HdRenderParam is an opaque (to core Hydra) handle, to an object
 /// that is obtained from the render delegate and passed to each prim
 /// during Sync processing.
 ///
-class HdRenderParam {
+class HdRenderParam 
+{
 public:
     HdRenderParam() {}
     HD_API
@@ -72,7 +74,8 @@ typedef TfHashMap<TfToken, VtValue, TfToken::HashFunctor> HdRenderSettingsMap;
 /// HdRenderSettingDescriptor represents a render setting that a render delegate
 /// wants to export (e.g. to UI).
 ///
-struct HdRenderSettingDescriptor {
+struct HdRenderSettingDescriptor 
+{
     // A human readable name.
     std::string name;
     // The key for HdRenderDelegate::SetRenderSetting/GetRenderSetting.
@@ -90,6 +93,14 @@ class HdRenderDelegate
 public:
     HD_API
     virtual ~HdRenderDelegate();
+
+    ///
+    /// Set list of driver objects, such as a rendering context / devices.
+    /// This is automatically called from HdRenderIndex when a HdDriver is
+    /// provided during its construction. Default implementation does nothing.
+    ///
+    HD_API
+    virtual void SetDrivers(HdDriverVector const& drivers);
 
     ///
     /// Returns a list of typeId's of all supported Rprims by this render
@@ -122,7 +133,8 @@ public:
     ///
     /// A render delegate may return null for the param.
     ///
-    virtual HdRenderParam *GetRenderParam() const = 0;
+    HD_API
+    virtual HdRenderParam *GetRenderParam() const;
 
     ///
     /// Returns a shared ptr to the resource registry of the current render
@@ -260,13 +272,10 @@ public:
     ///
     /// Request to create a new instancer.
     /// \param id The unique identifier of this instancer.
-    /// \param instancerId The unique identifier for the parent instancer that
-    ///                    uses this instancer as a prototype (may be empty).
     /// \return A pointer to the new instancer or nullptr on error.
     ///
     virtual HdInstancer *CreateInstancer(HdSceneDelegate *delegate,
-                                         SdfPath const& id,
-                                         SdfPath const& instancerId) = 0;
+                                         SdfPath const& id) = 0;
 
     virtual void DestroyInstancer(HdInstancer *instancer) = 0;
 
@@ -281,13 +290,10 @@ public:
     /// Request to Allocate and Construct a new Rprim.
     /// \param typeId the type identifier of the prim to allocate
     /// \param rprimId a unique identifier for the prim
-    /// \param instancerId the unique identifier for the instancer that uses
-    ///                    the prim (optional: May be empty).
     /// \return A pointer to the new prim or nullptr on error.
     ///                     
     virtual HdRprim *CreateRprim(TfToken const& typeId,
-                                 SdfPath const& rprimId,
-                                 SdfPath const& instancerId) = 0;
+                                 SdfPath const& rprimId) = 0;
 
     ///
     /// Request to Destruct and deallocate the prim.
@@ -384,17 +390,6 @@ public:
     ///
     HD_API
     virtual TfToken GetMaterialNetworkSelector() const;
-
-    ///
-    /// Return true to indicate that the render delegate wants rprim primvars
-    /// to be filtered by the scene delegate to reduce the amount of primvars
-    /// that are send to the render delegate. For example the scene delegate
-    /// may check the bound material primvar requirements and send only those
-    /// to the render delegate. Return false to not apply primvar filtering in
-    /// the scene delegate. Defaults to false.
-    ///
-    HD_API
-    virtual bool IsPrimvarFilteringNeeded() const;
 
     ///
     /// Returns the ordered list of shader source types that the render delegate 

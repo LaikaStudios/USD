@@ -24,10 +24,13 @@
 #ifndef PXR_IMAGING_HGI_GL_CONVERSIONS_H
 #define PXR_IMAGING_HGI_GL_CONVERSIONS_H
 
-#include <GL/glew.h>
 #include "pxr/pxr.h"
 #include "pxr/imaging/hgiGL/api.h"
+#include "pxr/imaging/garch/glApi.h"
+#include "pxr/imaging/hgi/enums.h"
 #include "pxr/imaging/hgi/types.h"
+
+#include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -39,17 +42,53 @@ PXR_NAMESPACE_OPEN_SCOPE
 class HgiGLConversions final
 {
 public:
-    //
-    // Hgi to GL conversions
-    //
-
     HGIGL_API
     static void GetFormat(
         HgiFormat inFormat,
         GLenum *outFormat,
         GLenum *outType,
-        GLenum *outInternalFormat);
+        GLenum *outInternalFormat = nullptr);
 
+    HGIGL_API
+    static GLenum GetFormatType(HgiFormat inFormat);
+
+    HGIGL_API
+    static std::vector<GLenum> GetShaderStages(HgiShaderStage ss);
+
+    HGIGL_API
+    static GLenum GetCullMode(HgiCullMode cm);
+
+    HGIGL_API
+    static GLenum GetPolygonMode(HgiPolygonMode pm);
+
+    HGIGL_API
+    static GLenum GetBlendFactor(HgiBlendFactor bf);
+
+    HGIGL_API
+    static GLenum GetBlendEquation(HgiBlendOp bo);
+
+    HGIGL_API
+    static GLenum GetDepthCompareFunction(HgiCompareFunction cf);
+
+    HGIGL_API
+    static GLenum GetTextureType(HgiTextureType tt);
+
+    HGIGL_API
+    static GLenum GetSamplerAddressMode(HgiSamplerAddressMode am);
+
+    HGIGL_API
+    static GLenum GetMagFilter(HgiSamplerFilter mf);
+
+    HGIGL_API
+    static GLenum GetMinFilter(
+        HgiSamplerFilter minFilter, 
+        HgiMipFilter mipFilter);
+
+    HGIGL_API
+    static GLenum GetComponentSwizzle(HgiComponentSwizzle);
+
+    HGIGL_API
+    static GLenum GetPrimitiveType(HgiPrimitiveType pt);
 };
 
 

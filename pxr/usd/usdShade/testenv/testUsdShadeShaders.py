@@ -22,12 +22,17 @@
 # KIND, either express or implied. See the Apache License for the specific          
 # language governing permissions and limitations under the Apache License. 
 
+from __future__ import print_function
+
 from pxr import Tf, Sdf, Usd, UsdGeom, UsdShade
 import unittest
 
 palePath = Sdf.Path("/Model/Materials/MaterialSharp/Pale")
 whiterPalePath = Sdf.Path("/Model/Materials/MaterialSharp/WhiterPale")
 classPalePath = Sdf.Path("/classPale")
+
+Input = UsdShade.AttributeType.Input
+Output = UsdShade.AttributeType.Output
 
 class TestUsdShadeShaders(unittest.TestCase):
     def _ConnectionsEqual(self, a, b):
@@ -100,36 +105,39 @@ class TestUsdShadeShaders(unittest.TestCase):
         usdShadeInput.Set(1.0)
         self.assertTrue(not usdShadeInput.HasConnectedSource())
         
-        usdShadeInput.ConnectToSource(whiterPale, 'Fout')
+        usdShadeInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(),
+            'Fout', Output))
         self.assertTrue(usdShadeInput.HasConnectedSource())
 
-        self.assertEqual(usdShadeInput.GetRawConnectedSourcePaths(),
+        self.assertEqual(usdShadeInput.GetAttr().GetConnections(),
                 [whiterPale.GetPath().AppendProperty("outputs:Fout")])
 
-        self.assertTrue(self._ConnectionsEqual(
-                usdShadeInput.GetConnectedSource(),
-                (whiterPale, 'Fout', UsdShade.AttributeType.Output)))
-        usdShadeInput.ClearSource()
+        self.assertEqual(usdShadeInput.GetConnectedSources()[0],
+                [UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(),
+                'Fout', Output)])
+        usdShadeInput.ClearSources()
         self.assertTrue(not usdShadeInput.HasConnectedSource())
-        self.assertEqual(usdShadeInput.GetConnectedSource(), None)
+        self.assertEqual(usdShadeInput.GetConnectedSources()[0], [])
 
         # Now make the connection in the class
         inheritedInput = shaderClass.CreateInput('myFloatInput', 
                                                  Sdf.ValueTypeNames.Float)
-        inheritedInput.ConnectToSource(whiterPale, 'Fout')
+        inheritedInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), 'Fout', Output))
         # note we're now testing the inheritING prim's parameter
         self.assertTrue(usdShadeInput.HasConnectedSource())
-        self.assertTrue(self._ConnectionsEqual(usdShadeInput.GetConnectedSource(),
-                                      (whiterPale, 'Fout', UsdShade.AttributeType.Output)))
+        self.assertTrue(usdShadeInput.GetConnectedSources()[0],
+            [UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), 'Fout', Output)])
         # clearing no longer changes anything
-        usdShadeInput.ClearSource()
+        usdShadeInput.ClearSources()
         self.assertTrue(usdShadeInput.HasConnectedSource())
-        self.assertTrue(self._ConnectionsEqual(usdShadeInput.GetConnectedSource(),
-                                      (whiterPale, 'Fout', UsdShade.AttributeType.Output)))
+        self.assertTrue(usdShadeInput.GetConnectedSources()[0],
+            [UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), 'Fout', Output)])
         # but disconnecting should
         usdShadeInput.DisconnectSource()
         self.assertTrue(not usdShadeInput.HasConnectedSource())
-        self.assertEqual(usdShadeInput.GetConnectedSource(), None)
+        self.assertEqual(usdShadeInput.GetConnectedSources()[0], [])
 
 
         ################################
@@ -149,22 +157,25 @@ class TestUsdShadeShaders(unittest.TestCase):
         self.assertTrue(whiterPale.GetSourceCode() is None)
 
         # Test boundaries of parameter type-testing when connecting
-        print "Test Typed Input Connections"
+        print("Test Typed Input Connections")
 
         colInput = pale.CreateInput("col1", Sdf.ValueTypeNames.Color3f)
         self.assertTrue(colInput)
-        self.assertTrue(colInput.ConnectToSource(whiterPale, "colorOut"))
+        self.assertTrue(colInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), 'colorOut', Output)))
         outputAttr = whiterPale.GetPrim().GetAttribute("outputs:colorOut")
         self.assertTrue(outputAttr)
         self.assertEqual(outputAttr.GetTypeName(), Sdf.ValueTypeNames.Color3f)
 
         v3fInput = pale.CreateInput("v3f1", Sdf.ValueTypeNames.Float3)
         self.assertTrue(v3fInput)
-        self.assertTrue(v3fInput.ConnectToSource(whiterPale, "colorOut"))
+        self.assertTrue(v3fInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), "colorOut", Output)))
 
         pointInput = pale.CreateInput("point1", Sdf.ValueTypeNames.Point3f)
         self.assertTrue(pointInput)
-        self.assertTrue(pointInput.ConnectToSource(whiterPale, "colorOut"))
+        self.assertTrue(pointInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), "colorOut", Output)))
 
         floatInput = pale.CreateInput("float1", Sdf.ValueTypeNames.Float)
         self.assertTrue(floatInput)
@@ -172,16 +183,17 @@ class TestUsdShadeShaders(unittest.TestCase):
         # type-checking for input / output connections.  See bug/113600
         # can't connect float to color!
         #with RequiredException(Tf.ErrorException):
-        #    floatInput.ConnectToSource(whiterPale, "colorOut")
+        #    floatInput.ConnectToSource(
+        #        UsdShade.ConnectionSourceInfo(whiterPale, "colorOut", Output))
 
-        self.assertTrue(floatInput.ConnectToSource(whiterPale, "floatInput",
-            sourceType=UsdShade.AttributeType.Input))
+        self.assertTrue(floatInput.ConnectToSource(
+            UsdShade.ConnectionSourceInfo(whiterPale.ConnectableAPI(), "floatInput", Input)))
         outputAttr = whiterPale.GetPrim().GetAttribute("outputs:floatInput")
         self.assertFalse(outputAttr)
         outputAttr = whiterPale.GetPrim().GetAttribute("inputs:floatInput")
         self.assertTrue(outputAttr)
 
-        print "Test Input Fetching"
+        print("Test Input Fetching")
         # test against single input fetches
         vecInput = pale.CreateInput('vec', Sdf.ValueTypeNames.Color3f)
         self.assertTrue(vecInput)
@@ -230,7 +242,7 @@ class TestUsdShadeShaders(unittest.TestCase):
         self.assertEqual(pale.GetSdrMetadata(), baseSdrMetadata)
         paleSdrMetadata = {Sdr.NodeMetadata.Departments : "anim|layout",
                               Sdr.NodeMetadata.Category : "preview"}
-        for i,j in paleSdrMetadata.iteritems():
+        for i,j in paleSdrMetadata.items():
             pale.SetSdrMetadataByKey(i, j)
 
         self.assertEqual(pale.GetSdrMetadata(), 

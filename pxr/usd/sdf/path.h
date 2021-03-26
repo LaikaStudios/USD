@@ -46,6 +46,7 @@
 PXR_NAMESPACE_OPEN_SCOPE
 
 class Sdf_PathNode;
+class SdfPathAncestorsRange;
 
 // Ref-counting pointer to a path node.
 // Intrusive ref-counts are used to keep the size of SdfPath
@@ -302,7 +303,11 @@ public:
     
     /// Constructs the default, empty path.
     ///
-    constexpr SdfPath() = default;
+    SdfPath() noexcept {
+        // This generates a single instruction instead of 2 on gcc 6.3.  Seems
+        // to be fixed on gcc 7+ and newer clangs.  Remove when we're there!
+        memset(this, 0, sizeof(*this));
+    }
 
     /// Creates a path from the given string.
     ///
@@ -332,6 +337,9 @@ public:
 
     /// Returns whether the path is absolute.
     SDF_API bool IsAbsolutePath() const;
+
+    /// Return true if this path is the AbsoluteRootPath().
+    SDF_API bool IsAbsoluteRootPath() const;
 
     /// Returns whether the path identifies a prim.
     SDF_API bool IsPrimPath() const;
@@ -412,19 +420,61 @@ public:
         return !_primPart; 
     }
 
-    /// Returns the string representation of this path as a TfToken.
+    /// Return the string representation of this path as a TfToken.
+    ///
+    /// This function is recommended only for human-readable or diagnostic
+    /// output.  Use the SdfPath API to manipulate paths.  It is less
+    /// error-prone and has better performance.
+    SDF_API TfToken GetAsToken() const;
+
+    /// Return the string representation of this path as a TfToken lvalue.
+    ///
+    /// This function returns a persistent lvalue.  If an rvalue will suffice,
+    /// call GetAsToken() instead.  That avoids populating internal data
+    /// structures to hold the persistent token.
+    ///
+    /// This function is recommended only for human-readable or diagnostic
+    /// output.  Use the SdfPath API to manipulate paths.  It is less
+    /// error-prone and has better performance.
     SDF_API TfToken const &GetToken() const;
 
-    /// Returns the string representation of this path as a std::string.
+    /// Return the string representation of this path as a std::string.
+    ///
+    /// This function is recommended only for human-readable or diagnostic
+    /// output.  Use the SdfPath API to manipulate paths.  It is less
+    /// error-prone and has better performance.
+    SDF_API std::string GetAsString() const;
+
+    /// Return the string representation of this path as a std::string.
+    ///
+    /// This function returns a persistent lvalue.  If an rvalue will suffice,
+    /// call GetAsString() instead.  That avoids populating internal data
+    /// structures to hold the persistent string.
+    ///
+    /// This function is recommended only for human-readable or diagnostic
+    /// output.  Use the SdfPath API to manipulate paths.  It is less
+    /// error-prone and has better performance.
     SDF_API const std::string &GetString() const;
 
     /// Returns the string representation of this path as a c string.
+    ///
+    /// This function returns a pointer to a persistent c string.  If a
+    /// temporary c string will suffice, call GetAsString().c_str() instead.
+    /// That avoids populating internal data structures to hold the persistent
+    /// string.
+    ///
+    /// This function is recommended only for human-readable or diagnostic
+    /// output.  Use the SdfPath API to manipulate paths.  It is less
+    /// error-prone and has better performance.
     SDF_API const char *GetText() const;
 
     /// Returns the prefix paths of this path.
     ///
     /// Prefixes are returned in order of shortest to longest.  The path
     /// itself is returned as the last prefix.
+    /// Note that if the prefix order does not need to be from shortest to
+    /// longest, it is more efficient to use GetAncestorsRange, which
+    /// produces an equivalent set of paths, ordered from longest to shortest.
     SDF_API SdfPathVector GetPrefixes() const;
 
     /// Fills prefixes with prefixes of this path.
@@ -433,7 +483,17 @@ public:
     ///
     /// Prefixes are returned in order of shortest to longest.  The path
     /// itself is returned as the last prefix.
+    /// Note that if the prefix order does not need to be from shortest to
+    /// longest, it is more efficient to use GetAncestorsRange, which
+    /// produces an equivalent set of paths, ordered from longest to shortest.
     SDF_API void GetPrefixes(SdfPathVector *prefixes) const;
+
+    /// Return a range for iterating over the ancestors of this path.
+    ///
+    /// The range provides iteration over the prefixes of a path, ordered
+    /// from longest to shortest (the opposite of the order of the prefixes
+    /// returned by GetPrefixes).
+    SDF_API SdfPathAncestorsRange GetAncestorsRange() const;
 
     /// Returns the name of the prim, property or relational
     /// attribute identified by the path.
@@ -539,7 +599,9 @@ public:
     /// ('/foo').  For a prim property path (like '/foo/bar.property'), return
     /// the prim's path ('/foo/bar').  For a target path (like
     /// '/foo/bar.property[/target]') return the property path
-    /// ('/foo/bar.property').  For a relational attribute or mapper path (like
+    /// ('/foo/bar.property').  For a mapper path (like
+    /// '/foo/bar.property.mapper[/target]') return the property path
+    /// ('/foo/bar.property).  For a relational attribute path (like
     /// '/foo/bar.property[/target].relAttr') return the relationship target's
     /// path ('/foo/bar.property[/target]').  For a prim variant selection path
     /// (like '/foo/bar{var=sel}') return the prim path ('/foo/bar').  For a
@@ -550,7 +612,9 @@ public:
     ///
     /// Note that the parent path of a relative parent path ('..') is a relative
     /// grandparent path ('../..').  Use caution writing loops that walk to
-    /// parent paths since relative paths have infinitely many ancestors.
+    /// parent paths since relative paths have infinitely many ancestors.  To
+    /// more safely traverse ancestor paths, consider iterating over an
+    /// SdfPathAncestorsRange instead, as returend by GetAncestorsRange().
     SDF_API SdfPath GetParentPath() const;
 
     /// Creates a path by stripping all relational attributes, targets,
@@ -835,37 +899,21 @@ public:
         return _LessThanInternal(*this, rhs);
     }
 
+    template <class HashState>
+    friend void TfHashAppend(HashState &h, SdfPath const &path) {
+        // The hash function is pretty sensitive performance-wise.  Be
+        // careful making changes here, and run tests.
+        uint32_t primPart, propPart;
+        memcpy(&primPart, &path._primPart, sizeof(primPart));
+        memcpy(&propPart, &path._propPart, sizeof(propPart));
+        h.Append(primPart);
+        h.Append(propPart);
+    }
+
     // For hash maps and sets
     struct Hash {
         inline size_t operator()(const SdfPath& path) const {
-            // The hash function is pretty sensitive performance-wise.  Be
-            // careful making changes here, and run tests.
-            uint32_t primPart, propPart;
-            memcpy(&primPart, &path._primPart, sizeof(primPart));
-            memcpy(&propPart, &path._propPart, sizeof(propPart));
-
-            // Important considerations here:
-            // - It must be fast to execute.
-            // - It must do well in hash tables that find indexes by taking
-            //   the remainder divided by a prime number of buckets.
-            // - It must do well in hash tables that find indexes by taking
-            //   just the low-order bits.
-
-            // This hash function maps the (primPart, propPart) pair to a single
-            // value by using triangular numbers.  So the first few path hash
-            // values would look like this, for primPart as X increasing
-            // left-to-right and for propPart as Y increasing top-to-bottom.
-            //
-            //  0  2  5  9 14 20
-            //  1  4  8 13 19 26
-            //  3  7 12 18 25 33
-            //  6 11 17 24 32 41
-            // 10 16 23 31 40 50
-            // 15 22 30 39 49 60
-
-            uint64_t x = primPart >> 8;
-            uint64_t y = x + (propPart >> 8);
-            return x + (y * (y + 1)) / 2;
+            return TfHash()(path);
         }
     };
 
@@ -930,6 +978,7 @@ private:
 
     friend class Sdf_PathNode;
     friend class Sdfext_PathAccess;
+    friend class SdfPathAncestorsRange;
 
     // converts elements to a string for parsing (unfortunate)
     static std::string
@@ -965,6 +1014,73 @@ private:
     Sdf_PathPropNodeHandle _propPart;
 
 };
+
+
+/// \class SdfPathAncestorsRange
+///
+/// Range representing a path and ancestors, and providing methods for
+/// iterating over them.
+///
+/// An ancestor range represents a path and all of its ancestors ordered from
+/// nearest to furthest (root-most).
+/// For example, given a path like `/a/b.prop`, the range represents paths
+/// `/a/b.prop`, `/a/b` and `/a`, in that order.
+/// A range accepts relative paths as well: For path `a/b.prop`, the range
+/// represents paths 'a/b.prop`, `a/b` and `a`.
+/// If a path contains parent path elements, (`..`), those elements are treated
+/// as elements of the range. For instance, given path `../a/b`, the range
+/// represents paths `../a/b`, `../a` and `..`.
+/// This represents the same of set of `prefix` paths as SdfPath::GetPrefixes,
+/// but in reverse order.
+class SdfPathAncestorsRange
+{
+public:
+
+    SdfPathAncestorsRange(const SdfPath& path)
+        : _path(path) {}
+
+    const SdfPath& GetPath() const { return _path; }
+
+    struct iterator {
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = SdfPath;
+        using difference_type = std::ptrdiff_t;
+        using reference = const SdfPath&;
+        using pointer = const SdfPath*;
+
+        iterator(const SdfPath& path) : _path(path) {}
+
+        iterator() = default;
+
+        SDF_API
+        iterator& operator++();
+
+        const SdfPath& operator*() const { return _path; }
+
+        const SdfPath* operator->() const { return &_path; }
+        
+        bool operator==(const iterator& o) const { return _path == o._path; }
+
+        bool operator!=(const iterator& o) const { return _path != o._path; }
+
+        /// Return the distance between two iterators.
+        /// It is only valid to compute the distance between paths
+        /// that share a common prefix.
+        SDF_API friend difference_type  
+        distance(const iterator& first, const iterator& last);
+
+    private:
+        SdfPath _path;
+    };
+
+    iterator begin() const { return iterator(_path); }
+
+    iterator end() const { return iterator(); }
+
+private:
+    SdfPath _path;
+};
+
 
 // Overload hash_value for SdfPath.  Used by things like boost::hash.
 inline size_t hash_value(SdfPath const &path)
@@ -1048,35 +1164,47 @@ Sdf_PathFindLongestPrefixImpl(RandomAccessIterator begin,
     if (begin == end)
         return end;
 
+    Compare comp(getPath);
+
     // Search for where this path would lexicographically appear in the range.
-    RandomAccessIterator result =
-        std::lower_bound(begin, end, path, Compare(getPath));
+    RandomAccessIterator result = std::lower_bound(begin, end, path, comp);
 
     // If we didn't get the end, check to see if we got the path exactly if
     // we're not looking for a strict prefix.
-    if (!strictPrefix && result != end && getPath(*result) == path)
+    if (!strictPrefix && result != end && getPath(*result) == path) {
         return result;
+    }
 
     // If we got begin (and didn't match in the case of a non-strict prefix)
     // then there's no prefix.
-    if (result == begin)
+    if (result == begin) {
         return end;
+    }
 
     // If the prior element is a prefix, we're done.
-    if (path.HasPrefix(getPath(*--result)))
+    if (path.HasPrefix(getPath(*--result))) {
         return result;
+    }
 
     // Otherwise, find the common prefix of the lexicographical predecessor and
-    // recurse looking for it or its longest prefix in the preceding range.  We
-    // always pass strictPrefix=false, since now we're operating on prefixes of
-    // the original caller's path.
-    RandomAccessIterator final =
-        Sdf_PathFindLongestPrefixImpl(
-            begin, result, path.GetCommonPrefix(getPath(*result)),
-            /*strictPrefix=*/ false, getPath);
+    // look for its prefix in the preceding range.
+    SdfPath newPath = path.GetCommonPrefix(getPath(*result));
+    auto origEnd = end;
+    do {
+        end = result;
+        result = std::lower_bound(begin, end, newPath, comp);
 
-    // If the recursion failed, promote the recursive call's end to our end.
-    return final == result ? end : final;
+        if (result != end && getPath(*result) == newPath) {
+            return result;
+        }
+        if (result == begin) {
+            return origEnd;
+        }
+        if (newPath.HasPrefix(getPath(*--result))) {
+            return result;
+        }
+        newPath = newPath.GetCommonPrefix(getPath(*result));
+    } while (true);
 }
 
 /// Return an iterator to the element of [\a begin, \a end) that is the longest

@@ -261,13 +261,16 @@ SdfData::_GetOrCreateFieldValue(const SdfPath &path,
     }
 
     _SpecData &spec = i->second;
-    for (size_t j=0, jEnd = spec.fields.size(); j != jEnd; ++j) {
-        if (spec.fields[j].first == field) {
-            return &spec.fields[j].second;
+    for (auto &f: spec.fields) {
+        if (f.first == field) {
+            return &f.second;
         }
     }
 
-    spec.fields.push_back( _FieldValuePair(field, VtValue()) );
+    spec.fields.emplace_back(std::piecewise_construct,
+                             std::forward_as_tuple(field),
+                             std::forward_as_tuple());
+
     return &spec.fields.back().second;
 }
 
@@ -291,19 +294,18 @@ SdfData::Erase(const SdfPath &path, const TfToken & field)
 std::vector<TfToken>
 SdfData::List(const SdfPath &path) const
 {
+    std::vector<TfToken> names;
     _HashTable::const_iterator i = _data.find(path);
     if (i != _data.end()) {
         const _SpecData & spec = i->second;
 
-        std::vector<TfToken> names;
-        names.reserve(spec.fields.size());
-        for (size_t j=0, jEnd = spec.fields.size(); j != jEnd; ++j) {
-            names.push_back(spec.fields[j].first);
+        const size_t numFields = spec.fields.size();
+        names.resize(numFields);
+        for (size_t j=0; j != numFields; ++j) {
+            names[j] = spec.fields[j].first;
         }
-        return names;
     }
-
-    return std::vector<TfToken>();
+    return names;
 }
 
 

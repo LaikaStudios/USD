@@ -23,6 +23,7 @@
 //
 #include "pxr/pxr.h"
 #include "hdPrman/matfiltFilterChain.h"
+#include "pxr/imaging/hd/perfLog.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -30,11 +31,13 @@ void
 MatfiltExecFilterChain(
     MatfiltFilterChain const& filterChain,
     const SdfPath & networkId,
-    MatfiltNetwork & network,
+    HdMaterialNetwork2 & network,
     const std::map<TfToken, VtValue> & contextValues,
     const NdrTokenVec & shaderTypePriority,
     std::vector<std::string> * outputErrorMessages)
 {
+    HD_TRACE_FUNCTION();
+
     for (const MatfiltFilterFnc & filter : filterChain) {
         (*filter)(networkId, network, contextValues, shaderTypePriority,
                 outputErrorMessages);

@@ -58,11 +58,26 @@ TF_DEFINE_ENV_SETTING(
     PCP_ENABLE_PARALLEL_LAYER_PREFETCH, false,
     "Enables parallel, threaded pre-fetch of sublayers.");
 
+TF_DEFINE_ENV_SETTING(
+    PCP_DISABLE_TIME_SCALING_BY_LAYER_TCPS, false,
+    "Disables automatic layer offset scaling from time codes per second "
+    "metadata in layers.");
+
+bool
+PcpIsTimeScalingForLayerTimeCodesPerSecondDisabled()
+{
+    return TfGetEnvSetting(PCP_DISABLE_TIME_SCALING_BY_LAYER_TCPS);
+}
+
 struct Pcp_SublayerInfo {
-    Pcp_SublayerInfo(const SdfLayerRefPtr& layer_, const SdfLayerOffset& offset_):
-        layer(layer_), offset(offset_) { }
+    Pcp_SublayerInfo(const SdfLayerRefPtr& layer_, const SdfLayerOffset& offset_,
+                     double timeCodesPerSecond_)
+        : layer(layer_)
+        , offset(offset_)
+        , timeCodesPerSecond(timeCodesPerSecond_) {}
     SdfLayerRefPtr layer;
     SdfLayerOffset offset;
+    double timeCodesPerSecond;
 };
 typedef std::vector<Pcp_SublayerInfo> Pcp_SublayerInfoVector;
 
@@ -172,6 +187,10 @@ Pcp_ComputeRelocationsForLayerStack(
     std::map<SdfPath, SdfRelocatesMap> relocatesPerPrim;
     static const TfToken field = SdfFieldKeys->Relocates;
     TF_REVERSE_FOR_ALL(layer, layers) {
+        if (!(*layer)->GetHints().mightHaveRelocates) {
+            continue;
+        }
+
         // Check for relocation arcs in this layer.
         SdfPrimSpecHandleVector stack;
         stack.push_back( (*layer)->GetPseudoRoot() );
@@ -326,6 +345,54 @@ Pcp_NeedToRecomputeDueToAssetPathChange(const PcpLayerStackPtr& layerStack)
     }
 
     return false;
+}
+
+// Helper for determining whether the session layer's computed TCPS should 
+// be used instead of the root layer's computed TCPS as the overall TCPS of 
+// layer stack. This is according to the strength order of:
+// 1. Authored session timeCodesPerSecond
+// 2. Authored root timeCodesPerSecond
+// 3. Authored session framesPerSecond
+// 4. Authored root framesPerSecond
+// 5. SdfSchema fallback.
+static 
+bool 
+_ShouldUseSessionTcps(const SdfLayerHandle &sessionLyr,
+                      const SdfLayerHandle &rootLyr)
+{
+    return sessionLyr && (
+        sessionLyr->HasTimeCodesPerSecond() ||
+        (!rootLyr->HasTimeCodesPerSecond() && sessionLyr->HasFramesPerSecond())
+    );
+}
+
+bool
+Pcp_NeedToRecomputeLayerStackTimeCodesPerSecond(
+    const PcpLayerStackPtr& layerStack, const SdfLayerHandle &changedLayer)
+{
+    const SdfLayerHandle &sessionLayer = 
+        layerStack->GetIdentifier().sessionLayer;
+    const SdfLayerHandle &rootLayer = 
+        layerStack->GetIdentifier().rootLayer;
+
+    // The changed layer is only relevant to the overall layer stack TCPS if
+    // it's the stack's root or session layer.
+    if (changedLayer != sessionLayer && changedLayer != rootLayer) {
+        return false;
+    }
+
+    // The new layer stack TCPS, when its computed, will come
+    // from either the session or root layer depending on what's
+    // authored. We use the same logic here as we do in 
+    // PcpLayerStack::_Compute.
+    const double newLayerStackTcps = 
+        _ShouldUseSessionTcps(sessionLayer, rootLayer) ? 
+            sessionLayer->GetTimeCodesPerSecond() : 
+            rootLayer->GetTimeCodesPerSecond();
+
+    // The layer stack's overall TCPS is cached so if it doesn't match, we
+    // need to recompute the layer stack.
+    return newLayerStackTcps != layerStack->GetTimeCodesPerSecond();
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -518,8 +585,14 @@ PcpLayerStack::GetMutedLayers() const
 bool 
 PcpLayerStack::HasLayer(const SdfLayerHandle& layer) const
 {
-    return std::find(_layers.begin(), _layers.end(), SdfLayerRefPtr(layer)) 
-        != _layers.end();
+    // Avoid doing refcount operations here.
+    SdfLayer const *layerPtr = get_pointer(layer);
+    for (SdfLayerRefPtr const &layerRefPtr: _layers) {
+        if (get_pointer(layerRefPtr) == layerPtr) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool 
@@ -561,21 +634,30 @@ PcpLayerStack::GetPathsToPrimsWithRelocates() const
 PcpMapExpression
 PcpLayerStack::GetExpressionForRelocatesAtPath(const SdfPath &path)
 {
-    if (_isUsd) {
-        return PcpMapExpression::Identity();
+    const PcpMapExpression::Variable *var = nullptr;
+    {
+        tbb::spin_mutex::scoped_lock lock{_relocatesVariablesMutex};
+        _RelocatesVarMap::const_iterator i = _relocatesVariables.find(path);
+        if (i != _relocatesVariables.end()) {
+            var = i->second.get();
+        }
     }
 
-    _RelocatesVarMap::iterator i = _relocatesVariables.find(path);
-    if (i != _relocatesVariables.end()) {
-        return i->second->GetExpression();
+    if (var) {
+        return var->GetExpression();
     }
 
     // Create a Variable representing the relocations that affect this path.
-    PcpMapExpression::VariableRefPtr var =
+    PcpMapExpression::VariableUniquePtr newVar =
         PcpMapExpression::NewVariable(_FilterRelocationsForPath(*this, path));
 
-    // Retain the variable so that we can update it if relocations change.
-    _relocatesVariables[path] = var;
+    {
+        // Retain the variable so that we can update it if relocations change.
+        tbb::spin_mutex::scoped_lock lock{_relocatesVariablesMutex};
+        _RelocatesVarMap::const_iterator i =
+            _relocatesVariables.emplace(path, std::move(newVar)).first;
+        var = i->second.get();
+    }
 
     return var->GetExpression();
 }
@@ -652,6 +734,17 @@ PcpLayerStack::_Compute(const std::string &fileFormatTarget,
     // Build the layer stack.
     std::set<SdfLayerHandle> seenLayers;
 
+    // Env setting for disabling TCPS scaling.
+    const bool scaleLayerOffsetByTcps = 
+        !PcpIsTimeScalingForLayerTimeCodesPerSecondDisabled();
+
+    const double rootTcps = _identifier.rootLayer->GetTimeCodesPerSecond();
+    SdfLayerOffset rootLayerOffset;
+
+    // The layer stack's time codes per second initially comes from the root 
+    // layer. An opinion in the session layer may override it below.
+    _timeCodesPerSecond = rootTcps;
+
     // Add the layer stack due to the session layer.  We *don't* apply
     // the sessionOwner to this stack.  We also skip this if the session
     // layer has been muted; in this case, the stack will not include the
@@ -664,8 +757,37 @@ PcpLayerStack::_Compute(const std::string &fileFormatTarget,
             _mutedAssetPaths.insert(canonicalMutedPath);
         }
         else {
+            // The session layer has its own time codes per second.
+            const double sessionTcps = 
+                _identifier.sessionLayer->GetTimeCodesPerSecond();
+            SdfLayerOffset sessionLayerOffset;
+
+            // The time codes per second of the entire layer stack may come 
+            // from the session layer or the root layer depending on which 
+            // metadata is authored where. We'll use the session layer's TCPS
+            // only if the session layer has an authored timeCodesPerSecond or
+            // if the root layer has no timeCodesPerSecond opinion but the 
+            // session layer has a framesPerSecond opinion.
+            //
+            // Note that both the session and root layers still have their own
+            // computed TCPS for just the layer itself, so either layer may end
+            // up with a layer offset scale in its map function to map from the 
+            // layer stack TCPS to the layer.
+            if (_ShouldUseSessionTcps(_identifier.sessionLayer, 
+                                      _identifier.rootLayer)) {
+                _timeCodesPerSecond = sessionTcps;
+                if (scaleLayerOffsetByTcps) {
+                    rootLayerOffset.SetScale(_timeCodesPerSecond / rootTcps);
+                }
+            } else {
+                if (scaleLayerOffsetByTcps) {
+                    sessionLayerOffset.SetScale(_timeCodesPerSecond / sessionTcps);
+                }
+            }
+
             SdfLayerTreeHandle sessionLayerTree = 
-                _BuildLayerStack(_identifier.sessionLayer, SdfLayerOffset(),
+                _BuildLayerStack(_identifier.sessionLayer, sessionLayerOffset,
+                                 sessionTcps,
                                  _identifier.pathResolverContext, layerArgs,
                                  std::string(), mutedLayers, &seenLayers, 
                                  &errors);
@@ -698,7 +820,7 @@ PcpLayerStack::_Compute(const std::string &fileFormatTarget,
     // don't allow muting a layer stack's root layer since that would
     // lead to empty layer stacks.
     _layerTree =
-        _BuildLayerStack(_identifier.rootLayer, SdfLayerOffset(),
+        _BuildLayerStack(_identifier.rootLayer, rootLayerOffset, rootTcps,
                          _identifier.pathResolverContext, layerArgs, 
                          sessionOwner, mutedLayers, &seenLayers, &errors);
 
@@ -719,6 +841,7 @@ SdfLayerTreeHandle
 PcpLayerStack::_BuildLayerStack(
     const SdfLayerHandle & layer,
     const SdfLayerOffset & offset,
+    double layerTcps,
     const ArResolverContext & pathResolverContext,
     const SdfLayer::FileFormatArguments & defaultLayerArgs,
     const std::string & sessionOwner,
@@ -748,16 +871,19 @@ PcpLayerStack::_BuildLayerStack(
         }
 
         // Resolve and open sublayer.
-        string sublayerPath(sublayers[i]);
         TfErrorMark m;
 
         SdfLayer::FileFormatArguments localArgs;
         const SdfLayer::FileFormatArguments& layerArgs = 
             Pcp_GetArgumentsForFileFormatTarget(
-                sublayerPath, &defaultLayerArgs, &localArgs);
+                sublayers[i], &defaultLayerArgs, &localArgs);
 
-        SdfLayerRefPtr sublayer = SdfFindOrOpenRelativeToLayer(
-            layer, &sublayerPath, layerArgs);
+        // This is equivalent to SdfLayer::FindOrOpenRelativeToLayer, but we
+        // want to keep track of the final sublayer path after anchoring it
+        // to the layer.
+        string sublayerPath = SdfComputeAssetPathRelativeToLayer(
+            layer, sublayers[i]);
+        SdfLayerRefPtr sublayer = SdfLayer::FindOrOpen(sublayerPath, layerArgs);
 
         _sublayerSourceInfo.emplace_back(layer, sublayers[i], sublayerPath);
 
@@ -765,8 +891,8 @@ PcpLayerStack::_BuildLayerStack(
             PcpErrorInvalidSublayerPathPtr err = 
                 PcpErrorInvalidSublayerPath::New();
             err->rootSite = PcpSite(_identifier, SdfPath::AbsoluteRootPath());
-            err->layer           = layer;
-            err->sublayerPath    = sublayerPath;
+            err->layer = layer;
+            err->sublayerPath = sublayerPath;
             if (!m.IsClean()) {
                 vector<string> commentary;
                 for (auto const &err: m) {
@@ -805,12 +931,22 @@ PcpLayerStack::_BuildLayerStack(
             sublayerOffset = SdfLayerOffset();
         }
 
+        // Apply the scale from computed layer TCPS to sublayer TCPS to sublayer
+        // layer offset.
+        const double sublayerTcps = sublayer->GetTimeCodesPerSecond();
+        if (!PcpIsTimeScalingForLayerTimeCodesPerSecondDisabled() &&
+            layerTcps != sublayerTcps) {
+            sublayerOffset.SetScale(sublayerOffset.GetScale() * 
+                                    layerTcps / sublayerTcps);
+        }
+
         // Combine the sublayerOffset with the cumulative offset
         // to find the absolute offset of this layer.
         sublayerOffset = offset * sublayerOffset;
 
         // Store the info for later recursion.
-        sublayerInfo.push_back(Pcp_SublayerInfo(sublayer, sublayerOffset));
+        sublayerInfo.push_back(Pcp_SublayerInfo(
+            sublayer, sublayerOffset, sublayerTcps));
     }
 
     // Reorder sublayers according to sessionOwner.
@@ -827,7 +963,8 @@ PcpLayerStack::_BuildLayerStack(
     SdfLayerTreeHandleVector subtrees;
     TF_FOR_ALL(i, sublayerInfo) {
         if (SdfLayerTreeHandle subtree =
-            _BuildLayerStack(i->layer, i->offset, pathResolverContext,
+            _BuildLayerStack(i->layer, i->offset, i->timeCodesPerSecond,
+                             pathResolverContext,
                              defaultLayerArgs, sessionOwner, 
                              mutedLayers, seenLayers, errors)) {
             subtrees.push_back(subtree);

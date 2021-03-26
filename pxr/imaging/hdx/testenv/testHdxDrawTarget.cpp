@@ -21,15 +21,16 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#include "pxr/pxr.h"
 
-#include "pxr/imaging/glf/glew.h"
+#include "pxr/imaging/garch/glApi.h"
+
 #include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/diagnostic.h"
 #include "pxr/imaging/glf/drawTarget.h"
 #include "pxr/imaging/glf/testGLContext.h"
 #include "pxr/base/gf/frustum.h"
 
+#include "pxr/imaging/hd/driver.h"
 #include "pxr/imaging/hd/engine.h"
 #include "pxr/imaging/hd/material.h"
 
@@ -38,11 +39,13 @@
 #include "pxr/imaging/hdSt/renderDelegate.h"
 
 #include "pxr/imaging/hdx/drawTargetTask.h"
-#include "pxr/imaging/hdx/drawTargetResolveTask.h"
 #include "pxr/imaging/hdx/simpleLightTask.h"
 #include "pxr/imaging/hdx/renderSetupTask.h"
 #include "pxr/imaging/hdx/renderTask.h"
 #include "pxr/imaging/hdx/unitTestDelegate.h"
+
+#include "pxr/imaging/hgi/hgi.h"
+#include "pxr/imaging/hgi/tokens.h"
 
 #include "pxr/usd/sdr/registry.h"
 
@@ -63,7 +66,7 @@ int main(int argc, char *argv[])
 
     // prepare GL context
     GlfTestGLContext::RegisterGLContextCallbacks();
-    GlfGlewInit();
+    GarchGLApiLoad();
     GlfSharedGLContextScopeHolder sharedContext;
     GlfContextCaps::InitInstance();
 
@@ -78,8 +81,14 @@ int main(int argc, char *argv[])
     GLfloat clearColor[4] = { 0.1f, 0.1f, 0.1f, 1.0f };
     GLfloat clearDepth[1] = { 1.0f };
 
+    // Hgi and HdDriver should be constructed before HdEngine to ensure they
+    // are destructed last. Hgi may be used during engine/delegate destruction.
+    HgiUniquePtr hgi = Hgi::CreatePlatformDefaultHgi();
+    HdDriver driver{HgiTokens->renderDriver, VtValue(hgi.get())};
+
     HdStRenderDelegate renderDelegate;
-    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&renderDelegate));
+    std::unique_ptr<HdRenderIndex> index(
+        HdRenderIndex::New(&renderDelegate, {&driver}));
     TF_VERIFY(index);
     std::unique_ptr<Hdx_UnitTestDelegate> delegate(
                                          new Hdx_UnitTestDelegate(index.get()));
@@ -92,16 +101,13 @@ int main(int argc, char *argv[])
     SdfPath simpleLightTask("/simpleLightTask");
     SdfPath renderSetupTask("/renderSetupTask");
     SdfPath renderTask("/renderTask");
-    SdfPath drawTargetResolveTask("/drawTargetResolveTask");
     delegate->AddSimpleLightTask(simpleLightTask);
     delegate->AddDrawTargetTask(drawTargetTask);
-    delegate->AddDrawTargetResolveTask(drawTargetResolveTask);
     delegate->AddRenderSetupTask(renderSetupTask);
     delegate->AddRenderTask(renderTask);
     HdTaskSharedPtrVector tasks;
     tasks.push_back(index->GetTask(simpleLightTask));
     tasks.push_back(index->GetTask(drawTargetTask));
-    tasks.push_back(index->GetTask(drawTargetResolveTask));
     tasks.push_back(index->GetTask(renderSetupTask));
     tasks.push_back(index->GetTask(renderTask));
 
@@ -158,7 +164,7 @@ int main(int argc, char *argv[])
     HdMaterialNetworkMap material1;
     HdMaterialNetwork& network1 = material1.map[terminalType];
     HdMaterialNode terminal1;
-    terminal1.path = materialId.AppendPath(SdfPath("/Shader"));
+    terminal1.path = materialId.AppendPath(SdfPath("Shader"));
     terminal1.identifier = sdrSurfaceNode->GetIdentifier();
     terminal1.parameters[TfToken("texColor")] = VtValue(GfVec3f(1));
 
@@ -168,27 +174,37 @@ int main(int argc, char *argv[])
     textureNode.identifier = TfToken("UsdUVTexture");
     textureNode.parameters[TfToken("fallback")] = VtValue(GfVec3f(1));
 
-    // For the file path, HdSt doesn't really care what it is since it is going
-    // to do a lookup of the prim via GetTextureResource on the sceneDelegate.
-    // The file path cannot be empty though, because if it is empty HdSt will
-    // use the fallback value of the texture node.
+    // A texture associated with a render buffer can be used by setting
+    // the file parameter to an SdfPath (instead of SdfAssetPath) that
+    // contains the prim path of the render buffer.
+    //
+    // We point to the render buffer that serves as color attachment of
+    // the draw target.
     textureNode.parameters[TfToken("file")] = 
-        VtValue(drawTargetAttachmentId.GetString());
+        VtValue(drawTargetAttachmentId);
+    textureNode.parameters[TfToken("wrapS")] =
+        VtValue(TfToken("repeat"));
+    textureNode.parameters[TfToken("wrapT")] =
+        VtValue(TfToken("repeat"));
+    textureNode.parameters[TfToken("minFilter")] =
+        VtValue(TfToken("linear"));
+    textureNode.parameters[TfToken("magFilter")] =
+        VtValue(TfToken("linear"));
 
     // Insert connection between texture node and terminal
     HdMaterialRelationship rel;
     rel.inputId = textureNode.path;
-    rel.inputName = TfToken("rgba");
+    rel.inputName = TfToken("rgb");
     rel.outputId = terminal1.path;
     rel.outputName = TfToken("texColor");
-    network1.relationships.emplace_back(std::move(rel));
+    network1.relationships.push_back(std::move(rel));
 
     // Insert texture node
-    network1.nodes.emplace_back(std::move(textureNode));
+    network1.nodes.push_back(std::move(textureNode));
 
     // Insert terminal
     material1.terminals.push_back(terminal1.path);
-    network1.nodes.emplace_back(std::move(terminal1)); // must be last in vector
+    network1.nodes.push_back(std::move(terminal1)); // must be last in vector
     delegate->AddMaterialResource(
         materialId,
         VtValue(material1));

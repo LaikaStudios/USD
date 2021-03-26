@@ -22,6 +22,8 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 #
+from __future__ import print_function
+from __future__ import division
 
 import sys, math
 import unittest
@@ -31,7 +33,7 @@ try:
     import numpy
     hasNumpy = True
 except ImportError:
-    print 'numpy not available, skipping buffer protocol tests'
+    print('numpy not available, skipping buffer protocol tests')
     hasNumpy = False
 
 def makeValue( Value, vals ):
@@ -121,7 +123,7 @@ class TestGfMatrix(unittest.TestCase):
             # Test comparison of Matrix and Matrixf
             #
             size = Matrix.dimension[0] * Matrix.dimension[1]
-            contents = range(1, size + 1)
+            contents = list(range(1, size + 1))
             md = Matrix(*contents)
             mf = Matrixf(*contents)
             self.assertEqual(md, mf)
@@ -343,7 +345,7 @@ class TestGfMatrix(unittest.TestCase):
                 
             m = Matrix(1,0,0, 1,0,0, 1,0,0)
             # should print a warning
-            print "expect a warning about failed convergence in OrthogonalizeBasis:"
+            print("expect a warning about failed convergence in OrthogonalizeBasis:")
             m.Orthonormalize()
 
             m = Matrix(1,0,0, 1,0,.0001, 0,1,0)
@@ -565,6 +567,14 @@ class TestGfMatrix(unittest.TestCase):
             self.assertTrue(Gf.IsClose(r4.axis, r5.axis, 0.0001) and \
                 Gf.IsClose(r4.angle, r5.angle, 0.0001))
 
+            # ExtractQuat() and ExtractRotation() should yield 
+            # equivalent rotations.
+            m = Matrix(mx3d, Vec3(1,2,3))
+            r1 = m.ExtractRotation()
+            r2 = Gf.Rotation(m.ExtractRotationQuat())
+            self.assertTrue(Gf.IsClose(r1.axis, r2.axis, 0.0001) and \
+                Gf.IsClose(r2.angle, r2.angle, 0.0001))
+
             m4 = Matrix(mx3d, Vec3(1,2,3)).ExtractRotationMatrix()
             self.assertEqual(m4, mx3d)
 
@@ -576,7 +586,7 @@ class TestGfMatrix(unittest.TestCase):
 
             m = Matrix(1,0,0,0,  1,0,0,0,  1,0,0,0,  0,0,0,1)
             # should print a warning
-            print "expect a warning about failed convergence in OrthogonalizeBasis:"
+            print("expect a warning about failed convergence in OrthogonalizeBasis:")
             m.Orthonormalize()
 
             m = Matrix(1,0,0,0,  1,0,.0001,0,  0,1,0,0,  0,0,0,1)
@@ -782,6 +792,21 @@ class TestGfMatrix(unittest.TestCase):
             AssertDeterminant(m1 * m3 * m4, det1 * det3 * det4)
             AssertDeterminant(m1 * m3 * m4 * m2, det1 * det3 * det4 * det2)
             AssertDeterminant(m2 * m3 * m4 * m2, det2 * det3 * det4 * det2)
+
+    def test_Exceptions(self):
+        # Bug USD-6284 shows that we erroneously implemented the Python 2.x
+        # buffer protocol 'getcharbuffer' method to expose the binary content,
+        # where really a string is expected.  This tests that we correctly raise
+        # instead of treating the binary object representation as a string.
+
+        # We get different exceptions between Python 2 & 3 here, see Python
+        # issue 41707 (https://bugs.python.org/issue41707).
+        excType = TypeError if sys.version_info.major < 3 else ValueError
+
+        with self.assertRaises(excType):
+            int(Gf.Matrix3d(3))
+        with self.assertRaises(excType):
+            int(Gf.Matrix3f(3))
 
 if __name__ == '__main__':
     unittest.main()

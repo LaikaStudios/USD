@@ -22,6 +22,8 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 
+from __future__ import print_function
+
 from pxr import Usd, UsdGeom, Vt, Sdf
 import unittest
 
@@ -65,8 +67,8 @@ class testUsdGeomSubset(unittest.TestCase):
         for familyName in invalidFamilies:
             (valid, reason) = UsdGeom.Subset.ValidateFamily(geom, 
                 UsdGeom.Tokens.face, familyName=familyName)
-            print "Face-subset family '%s' should be invalid because: %s" % \
-                (familyName, reason)
+            print("Face-subset family '%s' should be invalid because: %s" % \
+                (familyName, reason))
             self.assertFalse(valid)
             self.assertTrue(len(reason) > 0)
 
@@ -159,6 +161,17 @@ class testUsdGeomSubset(unittest.TestCase):
         allGeomSubsets = UsdGeom.Subset.GetAllGeomSubsets(
                 UsdGeom.Imageable(sphere))
         self.assertEqual(len(allGeomSubsets), 21)
+
+        # Check that invalid negative indices are ignored when getting 
+        # unassigned indices.
+        invalidIndices = Vt.IntArray([-3, -2, 0, 1, 2])
+        invalidSubset = UsdGeom.Subset.CreateUniqueGeomSubset(geom, "testSubset", 
+            UsdGeom.Tokens.face, invalidIndices, familyName='testFamily', 
+            familyType=UsdGeom.Tokens.partition)
+        invalidSubset.GetIndicesAttr().Set(invalidIndices)
+        self.assertTrue(invalidSubset)
+        self.assertEqual(UsdGeom.Subset.GetUnassignedIndices([invalidSubset], 5), 
+                         Vt.IntArray([3,4]))
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,20 +21,14 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#include "pxr/imaging/glf/glew.h"
-#include "pxr/imaging/glf/contextCaps.h"
-
 #include "pxr/imaging/hdx/oitResolveTask.h"
 #include "pxr/imaging/hdx/tokens.h"
-#include "pxr/imaging/hdx/debugCodes.h"
 #include "pxr/imaging/hdx/package.h"
 
-#include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/renderBuffer.h"
 #include "pxr/imaging/hd/renderDelegate.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/renderPass.h"
-#include "pxr/imaging/hd/renderPassState.h"
 #include "pxr/imaging/hd/rprimCollection.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
@@ -49,7 +43,7 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-typedef std::vector<HdBufferSourceSharedPtr> HdBufferSourceSharedPtrVector;
+using HdBufferSourceSharedPtrVector = std::vector<HdBufferSourceSharedPtr>;
 
 
 HdxOitResolveTask::HdxOitResolveTask(
@@ -60,9 +54,7 @@ HdxOitResolveTask::HdxOitResolveTask(
 {
 }
 
-HdxOitResolveTask::~HdxOitResolveTask()
-{
-}
+HdxOitResolveTask::~HdxOitResolveTask() = default;
 
 void
 HdxOitResolveTask::Sync(
@@ -80,13 +72,19 @@ HdxOitResolveTask::_PrepareOitBuffers(
     HdRenderIndex* renderIndex,
     GfVec2i const& screenSize)
 {
-    const int numSamples = 8; // Should match glslfx files
+    static const int numSamples = 8; // Should match glslfx files
 
-     HdStResourceRegistrySharedPtr const& hdStResourceRegistry =
-        boost::static_pointer_cast<HdStResourceRegistry>(
+    if (!(screenSize[0] >= 0 && screenSize[1] >= 0)) {
+        TF_CODING_ERROR("Invalid screen size for OIT resolve task %s",
+                        GetId().GetText());
+        return;
+    }
+
+    HdStResourceRegistrySharedPtr const& hdStResourceRegistry =
+        std::static_pointer_cast<HdStResourceRegistry>(
             renderIndex->GetResourceRegistry());
-
-    bool createOitBuffers = !_counterBar;
+    
+    const bool createOitBuffers = !_counterBar;
     if (createOitBuffers) { 
         //
         // Counter Buffer
@@ -158,26 +156,26 @@ HdxOitResolveTask::_PrepareOitBuffers(
     // The OIT buffer are sized based on the size of the screen and use 
     // fragCoord to index into the buffers.
     // We must update uniform screenSize when either X or Y increases in size.
-    bool resizeOitBuffers = (screenSize[0] > _screenSize[0] ||
-                             screenSize[1] > _screenSize[1]);
+    const bool resizeOitBuffers = (screenSize[0] > _screenSize[0] ||
+                                   screenSize[1] > _screenSize[1]);
 
     if (resizeOitBuffers) {
         _screenSize = screenSize;
-        int newBufferSize = screenSize[0] * screenSize[1];
+        const int newBufferSize = screenSize[0] * screenSize[1];
 
         // +1 because element 0 of the counter buffer is used as an atomic
         // counter in the shader to give each fragment a unique index.
         _counterBar->Resize(newBufferSize + 1);
         _indexBar->Resize(newBufferSize * numSamples);
         _dataBar->Resize(newBufferSize * numSamples);
-        _depthBar->Resize(newBufferSize * numSamples);;
+        _depthBar->Resize(newBufferSize * numSamples);
 
         // Update the values in the uniform buffer
-        HdBufferSourceSharedPtrVector uniformSources;
-        uniformSources.push_back(HdBufferSourceSharedPtr(
-                              new HdVtBufferSource(HdxTokens->oitScreenSize,
-                                                   VtValue(screenSize))));
-        hdStResourceRegistry->AddSources(_uniformBar, uniformSources);
+        hdStResourceRegistry->AddSource(
+            _uniformBar,
+            std::make_shared<HdVtBufferSource>(
+                HdxTokens->oitScreenSize,
+                VtValue(screenSize)));
     }
 }
 
@@ -227,30 +225,36 @@ HdxOitResolveTask::Prepare(HdTaskContext* ctx,
             return;
         }
 
-        _renderPass = boost::make_shared<HdSt_ImageShaderRenderPass>(
+        _renderPass = std::make_shared<HdSt_ImageShaderRenderPass>(
             renderIndex, collection);
 
         // We do not use renderDelegate->CreateRenderPassState because
         // ImageShaders always use HdSt
-        _renderPassState = boost::make_shared<HdStRenderPassState>();
+        _renderPassState = std::make_shared<HdStRenderPassState>();
+        _renderPassState->SetEnableDepthTest(false);
         _renderPassState->SetEnableDepthMask(false);
-        _renderPassState->SetColorMask(HdRenderPassState::ColorMaskRGBA);
+        _renderPassState->SetColorMasks({HdRenderPassState::ColorMaskRGBA});
         _renderPassState->SetBlendEnabled(true);
+        // We expect pre-multiplied color as input into the OIT resolve shader
+        // e.g. vec4(rgb * a, a). Hence the src factor for rgb is "One" since 
+        // src alpha is already accounted for. 
+        // Alpha's are blended with the same blending equation as the rgb's.
+        // Thinking about it conceptually, if you're looking through two glass 
+        // windows both occluding 50% of light, some light would still be 
+        // passing through. 50% of light passes through the first window, then 
+        // 50% of the remaining light through the second window. Hence the 
+        // equation: 0.5 + 0.5 * (1 - 0.5) = 0.75, as 75% of light is occluded.
         _renderPassState->SetBlend(
             HdBlendOp::HdBlendOpAdd,
             HdBlendFactor::HdBlendFactorOne,
             HdBlendFactor::HdBlendFactorOneMinusSrcAlpha,
             HdBlendOp::HdBlendOpAdd,
             HdBlendFactor::HdBlendFactorOne,
-            HdBlendFactor::HdBlendFactorOne);
+            HdBlendFactor::HdBlendFactorOneMinusSrcAlpha);
 
-        _renderPassShader = boost::make_shared<HdStRenderPassShader>(
+        _renderPassShader = std::make_shared<HdStRenderPassShader>(
             HdxPackageOitResolveImageShader());
         _renderPassState->SetRenderPassShader(_renderPassShader);
-
-        // We want OIT to resolve into the resolved aov, not the multi sample
-        // aov. See HdxTaskController::GetRenderingTasks().
-        _renderPassState->SetUseAovMultiSample(false);
 
         _renderPass->Prepare(GetRenderTags());
     }
@@ -295,6 +299,10 @@ HdxOitResolveTask::Execute(HdTaskContext* ctx)
         return;
     }
 
+    // Explicitly erase clear flag so that it can be re-used by subsequent
+    // OIT render and resolve tasks.
+    ctx->erase(HdxTokens->oitClearedFlag);
+
     if (!TF_VERIFY(_renderPassState)) return;
     if (!TF_VERIFY(_renderPassShader)) return;
 
@@ -305,15 +313,7 @@ HdxOitResolveTask::Execute(HdTaskContext* ctx)
         return;
     }
 
-    _renderPassState->Bind(); 
-
-    glDisable(GL_DEPTH_TEST);
-
     _renderPass->Execute(_renderPassState, GetRenderTags());
-
-    glEnable(GL_DEPTH_TEST);
-
-    _renderPassState->Unbind();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

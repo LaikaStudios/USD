@@ -23,11 +23,15 @@
 //
 
 #include "pxr/pxr.h"
+#include "pxr/base/arch/fileSystem.h"
+#include "pxr/base/arch/library.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/staticTokens.h"
+#include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/tf/weakPtr.h"
 #include "pxr/base/vt/types.h"
 #include "pxr/base/vt/array.h"
@@ -81,9 +85,9 @@ namespace {
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
 
-    // Discovery and source type
     ((discoveryType, "args"))
     ((sourceType, "RmanCpp"))
+    ((bxdfType, "bxdf"))
 );
 
 // XML attribute names (as they come from the args file). Many attributes are
@@ -99,6 +103,7 @@ TF_DEFINE_PRIVATE_TOKENS(
     ((inputAttr, "input"))
     ((tagAttr, "tag"))
     ((vstructmemberAttr, "vstructmember"))
+    ((sdrDefinitionNameAttr, "sdrDefinitionName"))
 );
 
 // Data that represents an SdrShaderNode before it is turned into one. The
@@ -234,12 +239,45 @@ RmanArgsParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
             discoveryResult.family,
             shaderRepresentation.type,
             _tokens->sourceType,
-            discoveryResult.uri,
             discoveryResult.resolvedUri,
+            _GetDsoPathFromArgsPath(discoveryResult.resolvedUri),
             std::move(shaderRepresentation.properties),
             metadata,
             discoveryResult.sourceCode)
     );
+}
+
+std::string
+RmanArgsParserPlugin::_GetDsoPathFromArgsPath(const std::string &argsPath)
+{
+    // We assume:
+    // - both the args file at argsPath and the .so it describes are 
+    //   filesystem accessible
+    // -  Given: /path/to/plugins/Args/somePlugin.args ,
+    //    we will locate its dso as:
+    //    /path/to/plugins/somePlugin.so
+    
+    const std::string argsExt(".args");
+    const std::string dsoExt(ARCH_PLUGIN_SUFFIX);
+    
+    std::vector<std::string> pathElts = TfStringSplit(TfNormPath(argsPath), "/");
+
+    if (pathElts.size() < 3 || 
+        !TfStringEndsWith(argsPath, argsExt) ||
+        pathElts[pathElts.size()-2] != "Args"){
+        TF_WARN("Unexpected path for RenderMan args file: %s - "
+                "expected a form like /path/to/plugins/Args/somePlugin.args",
+                argsPath.c_str());
+        return std::string();
+    }
+    
+    std::string  pluginFileName = TfStringReplace(pathElts.back(),
+                                                  argsExt,
+                                                  dsoExt);
+    pathElts.pop_back();
+    pathElts.back() = pluginFileName;
+    
+    return TfStringJoin(pathElts, ARCH_PATH_SEP);
 }
 
 SdrShaderPropertyUniquePtr
@@ -536,9 +574,13 @@ RmanArgsParserPlugin::_GetTypeName(
     TfToken typeName =
         _Get(attributes, _xmlAttributeNames->typeAttr, TfToken());
 
+    // 'bxdf' typed attributes are cast to the terminal type of the Sdr library
+    if (typeName == _tokens->bxdfType) {
+        typeName = SdrPropertyTypes->Terminal;
+    }
     // If the attributes indicates the property is a terminal, then the property
     // should be SdrPropertyTypes->Terminal
-    if (IsPropertyATerminal(attributes)) {
+    else if (IsPropertyATerminal(attributes)) {
         typeName = SdrPropertyTypes->Terminal;
     }
 
@@ -709,6 +751,7 @@ RmanArgsParserPlugin::_CreateProperty(
         _Get(attributes,
              _xmlAttributeNames->nameAttr,
              TfToken("NAME UNSPECIFIED"));
+    TfToken definitionName;
 
     // Get type name, and determine the size of the array (if an array)
     TfToken typeName;
@@ -728,7 +771,7 @@ RmanArgsParserPlugin::_CreateProperty(
                 _xmlAttributeNames->typeAttr, shaderRep, propName);
         }
     }
-
+    
     // The 'tag' attr is deprecated
     // -------------------------------------------------------------------------
     if (attributes.count(_xmlAttributeNames->tagAttr)) {
@@ -784,6 +827,18 @@ RmanArgsParserPlugin::_CreateProperty(
             }
         }
     }
+
+    // Handle definitionName, which requires changing propName
+    // -------------------------------------------------------------------------
+    if (attributes.count(_xmlAttributeNames->sdrDefinitionNameAttr)) {
+        TfToken definitionName =
+            TfToken(attributes.at(_xmlAttributeNames->sdrDefinitionNameAttr));
+        
+        attributes[SdrPropertyMetadata->ImplementationName] = propName;
+        propName = definitionName;
+        attributes.erase(_xmlAttributeNames->sdrDefinitionNameAttr);
+    }
+ 
 
     // Put any uncategorized attributes into hints
     // -------------------------------------------------------------------------

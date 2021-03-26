@@ -28,7 +28,6 @@
 #include "pxr/imaging/glf/api.h"
 #include "pxr/base/tf/singleton.h"
 
-#include <boost/noncopyable.hpp>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -56,13 +55,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 ///     subscribe to when the caps changes, so they can
 ///     update and invalidate.
 ///
-class GlfContextCaps : boost::noncopyable {
+class GlfContextCaps 
+{
 public:
 
     /// InitInstance queries the GL context for its capabilities.
     /// It should be called by the application before using systems
     /// that depend on the caps, such as Hydra.  A good example would be
-    /// to pair the call to initialize after a call to GlfGlewInit().
+    /// to pair the call to initialize after a call to initialize GL
     GLF_API
     static void InitInstance();
 
@@ -112,6 +112,10 @@ private:
     void _LoadCaps();
     GlfContextCaps();
     ~GlfContextCaps() = default;
+
+    // Disallow copies
+    GlfContextCaps(const GlfContextCaps&) = delete;
+    GlfContextCaps& operator=(const GlfContextCaps&) = delete;
 
     friend class TfSingleton<GlfContextCaps>;
 };

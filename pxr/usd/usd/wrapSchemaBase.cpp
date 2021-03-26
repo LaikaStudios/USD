@@ -61,6 +61,7 @@ __getattribute__(object selfObj, const char *name) {
         strcmp(name, "GetSchemaClassPrimDefinition") == 0 ||
         strcmp(name, "GetSchemaAttributeNames") == 0 ||
         strcmp(name, "GetSchemaType") == 0 ||
+        strcmp(name, "GetSchemaKind") == 0 ||
         strcmp(name, "IsAPISchema") == 0 ||
         strcmp(name, "IsConcrete") == 0 ||
         strcmp(name, "IsTyped") == 0 ||
@@ -89,7 +90,8 @@ void wrapUsdSchemaBase()
         .def("GetPrim", &UsdSchemaBase::GetPrim)
         .def("GetPath", &UsdSchemaBase::GetPath)
         .def("GetSchemaClassPrimDefinition",
-             &UsdSchemaBase::GetSchemaClassPrimDefinition)
+             &UsdSchemaBase::GetSchemaClassPrimDefinition,
+             return_internal_reference<>())
         .def("GetSchemaAttributeNames", &UsdSchemaBase::GetSchemaAttributeNames,
              arg("includeInherited")=true,
              return_value_policy<TfPySequenceToList>())
@@ -102,6 +104,7 @@ void wrapUsdSchemaBase()
         .def("IsMultipleApplyAPISchema", &UsdSchemaBase::IsMultipleApplyAPISchema) 
 
         .def("GetSchemaType", &UsdSchemaBase::GetSchemaType)
+        .def("GetSchemaKind", &UsdSchemaBase::GetSchemaKind)
 
         .def(!self)
 

@@ -25,19 +25,16 @@
 #include "pxr/usdImaging/usdImaging/delegate.h"
 #include "pxr/usdImaging/usdImaging/indexProxy.h"
 #include "pxr/usdImaging/usdImaging/tokens.h"
+#include "pxr/usdImaging/usdImaging/materialParamUtils.h"
 
 #include "pxr/imaging/hd/material.h"
 #include "pxr/imaging/hd/perfLog.h"
 
-#include "pxr/usd/usdShade/connectableAPI.h"
 #include "pxr/usd/usdShade/material.h"
 #include "pxr/usd/usdShade/shader.h"
 
-#include "pxr/usd/ar/resolver.h"
-#include "pxr/usd/sdr/registry.h"
-#include "pxr/usd/sdr/shaderNode.h"
-#include "pxr/usd/sdr/shaderProperty.h"
-
+#include "pxr/usd/ar/resolverScopedCache.h"
+#include "pxr/usd/ar/resolverContextBinder.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -110,13 +107,36 @@ UsdImagingMaterialAdapter::TrackVariability(
     UsdImagingInstancerContext const*
     instancerContext) const
 {
-    bool timeVarying = false;
-    HdMaterialNetworkMap map;
-    TfToken const& networkSelector = _GetMaterialNetworkSelector();
-    UsdTimeCode time = UsdTimeCode::Default();
-    _GetMaterialNetworkMap(prim, networkSelector, &map, time, &timeVarying);
-    if (timeVarying) {
-        *timeVaryingBits |= HdMaterial::DirtyResource;
+    UsdShadeMaterial material(prim);
+    if (!material) {
+        TF_RUNTIME_ERROR("Expected material prim at <%s> to be of type "
+                         "'UsdShadeMaterial', not type '%s'; ignoring",
+                         prim.GetPath().GetText(),
+                         prim.GetTypeName().GetText());
+        return;
+    }
+
+    const TfToken context = _GetMaterialNetworkSelector();
+
+    if (UsdShadeShader s = material.ComputeSurfaceSource(context)) {
+        if (UsdImaging_IsHdMaterialNetworkTimeVarying(s.GetPrim())) {
+            *timeVaryingBits |= HdMaterial::DirtyResource;
+            return;
+        }
+    }
+
+    if (UsdShadeShader d = material.ComputeDisplacementSource(context)) {
+        if (UsdImaging_IsHdMaterialNetworkTimeVarying(d.GetPrim())) {
+            *timeVaryingBits |= HdMaterial::DirtyResource;
+            return;
+        }
+    }
+
+    if (UsdShadeShader v = material.ComputeVolumeSource(context)) {
+        if (UsdImaging_IsHdMaterialNetworkTimeVarying(v.GetPrim())) {
+            *timeVaryingBits |= HdMaterial::DirtyResource;
+            return;
+        }
     }
 }
 
@@ -130,17 +150,6 @@ UsdImagingMaterialAdapter::UpdateForTime(
     UsdImagingInstancerContext const*
     instancerContext) const
 {
-    if (requestedBits & HdMaterial::DirtyResource) {
-        // Walk the material network and generate a HdMaterialNetworkMap
-        // structure to store it in the value cache.
-        bool timeVarying = false;
-        HdMaterialNetworkMap map;
-        TfToken const& networkSelector = _GetMaterialNetworkSelector();
-        _GetMaterialNetworkMap(prim, networkSelector, &map, time, &timeVarying);
-
-        UsdImagingValueCache* valueCache = _GetValueCache();
-        valueCache->GetMaterialResource(cachePath) = map;
-    }
 }
 
 /* virtual */
@@ -194,7 +203,6 @@ UsdImagingMaterialAdapter::MarkMaterialDirty(
     MarkDirty(prim, cachePath, HdMaterial::DirtyResource, index);
 }
 
-
 /* virtual */
 void
 UsdImagingMaterialAdapter::_RemovePrim(
@@ -204,259 +212,57 @@ UsdImagingMaterialAdapter::_RemovePrim(
     index->RemoveSprim(HdPrimTypeTokens->material, cachePath);
 }
 
-static TfToken
-_GetPrimvarNameAttributeValue(
-    SdrShaderNodeConstPtr const& sdrNode,
-    HdMaterialNode const& node,
-    TfToken const& propName)
+VtValue 
+UsdImagingMaterialAdapter::GetMaterialResource(UsdPrim const &prim,
+                                               SdfPath const& cachePath, 
+                                               UsdTimeCode time) const
 {
-    VtValue vtName;
-
-    // If the name of the primvar was authored in parameters list.
-    // The authored value is the strongest opinion
-
-    auto const& paramIt = node.parameters.find(propName);
-    if (paramIt != node.parameters.end()) {
-        vtName = paramIt->second;
-    }
-
-    // If we didn't find an authored value consult Sdr for the default value.
-
-    if (vtName.IsEmpty() && sdrNode) {
-        if (SdrShaderPropertyConstPtr sdrPrimvarInput = 
-                sdrNode->GetShaderInput(propName)) {
-            vtName = sdrPrimvarInput->GetDefaultValue();
-        }
-    }
-
-    if (vtName.IsHolding<TfToken>()) {
-        return vtName.UncheckedGet<TfToken>();
-    } else if (vtName.IsHolding<std::string>()) {
-        return TfToken(vtName.UncheckedGet<std::string>());
-    }
-
-    return TfToken();
-}
-
-static void
-_ExtractPrimvarsFromNode(
-    UsdShadeShader const & shadeNode,
-    HdMaterialNode const & node,
-    HdMaterialNetwork *materialNetwork,
-    TfToken const& networkSelector)
-{
-    SdrRegistry &shaderReg = SdrRegistry::GetInstance();
-    SdrShaderNodeConstPtr sdrNode = shaderReg.GetShaderNodeByIdentifierAndType(
-        node.identifier, networkSelector);
-
-    if (sdrNode) {
-        // GetPrimvars and GetAdditionalPrimvarProperties together give us the
-        // complete set of primvars needed by this shader node.
-        NdrTokenVec const& primvars = sdrNode->GetPrimvars();
-        materialNetwork->primvars.insert( 
-            materialNetwork->primvars.end(), primvars.begin(), primvars.end());
-
-        for (TfToken const& p : sdrNode->GetAdditionalPrimvarProperties()) {
-            TfToken name = _GetPrimvarNameAttributeValue(sdrNode, node, p);
-            materialNetwork->primvars.push_back(name);
-        }
-    }
-}
-
-// Walk the shader graph and emit nodes in topological order to avoid
-// forward-references.
-// This current implementation of _WalkGraph flattens the shading network into
-// a single graph with connectivity and values. It does not try to identify
-// NodeGraphs that can be processed once and shared, or even look for a
-// pre-baked implementation. Currently neither the material processing in Hydra
-// nor any of the back-ends (like HdPrman) can make use of this anyway.
-static
-void _WalkGraph(
-    UsdShadeShader const & shadeNode,
-    HdMaterialNetwork* materialNetwork,
-    TfToken const& networkSelector,
-    SdfPathSet* visitedNodes,
-    TfTokenVector const & shaderSourceTypes,
-    UsdTimeCode time,
-    bool* timeVarying)
-{
-    // Store the path of the node
-    HdMaterialNode node;
-    node.path = shadeNode.GetPath();
-    if (!TF_VERIFY(node.path != SdfPath::EmptyPath())) {
-        return;
-    }
-
-    // If this node has already been found via another path, we do
-    // not need to add it again.
-    if (visitedNodes->count(node.path) > 0) {
-        return;
-    }
-
-    // Visit the inputs of this node to ensure they are emitted first.
-    const std::vector<UsdShadeInput> shadeNodeInputs = shadeNode.GetInputs();
-    for (UsdShadeInput input: shadeNodeInputs) {
-
-        TfToken inputName = input.GetBaseName();
-
-        // Find the attribute this input is getting its value from, which might
-        // be an output or an input, including possibly itself if not connected
-        UsdShadeAttributeType attrType;
-        UsdAttribute attr = input.GetValueProducingAttribute(&attrType);
-
-        if (attrType == UsdShadeAttributeType::Output) {
-            // If it is an output on a shading node we visit the node and also
-            // create a relationship in the network
-            _WalkGraph(UsdShadeShader(
-                attr.GetPrim()),
-                materialNetwork,
-                networkSelector,
-                visitedNodes,
-                shaderSourceTypes,
-                time,
-                timeVarying);
-
-            HdMaterialRelationship relationship;
-            relationship.outputId = node.path;
-            relationship.outputName = inputName;
-            relationship.inputId = attr.GetPrim().GetPath();
-            relationship.inputName = UsdShadeOutput(attr).GetBaseName();
-            materialNetwork->relationships.push_back(relationship);
-        } else if (attrType == UsdShadeAttributeType::Input) {
-            // If it is an input attribute we get the authored value
-            VtValue value;
-            if (attr.Get(&value, time)) {
-                node.parameters[inputName] = value;
-            }
-
-            *timeVarying |= attr.ValueMightBeTimeVarying();
-        }
-    }
-
-    // Extract the identifier of the node.
-    // GetShaderNodeForSourceType will try to find/create an Sdr node for all
-    // three info cases: info:id, info:sourceAsset and info:sourceCode.
-    TfToken id;
-    if (!shadeNode.GetShaderId(&id)) {
-        for (auto const& sourceType : shaderSourceTypes) {
-            if (SdrShaderNodeConstPtr sdrNode = 
-                    shadeNode.GetShaderNodeForSourceType(sourceType)) {
-                id = sdrNode->GetIdentifier();
-                break;
-            }
-        }
-    }
-
-    if (!id.IsEmpty()) {
-        node.identifier = id;
-
-        // GprimAdapter can filter-out primvars not used by a material to reduce
-        // the number of primvars send to the render delegate. We extract the
-        // primvar names from the material node to ensure these primvars are
-        // not filtered-out by GprimAdapter.
-
-        _ExtractPrimvarsFromNode(
-            shadeNode, node, materialNetwork, networkSelector);
-    } 
-    
-    materialNetwork->nodes.push_back(node);
-    visitedNodes->emplace(node.path);
-}
-
-static void
-_BuildHdMaterialNetworkFromTerminal(
-    UsdShadeShader const& usdTerminal,
-    TfToken const& terminalIdentifier,
-    TfToken const& networkSelector,
-    TfTokenVector const& shaderSourceTypes,
-    HdMaterialNetworkMap *materialNetworkMap,
-    UsdTimeCode time,
-    bool* timeVarying)
-{
-    HdMaterialNetwork& network = materialNetworkMap->map[terminalIdentifier];
-    std::vector<HdMaterialNode>& nodes = network.nodes;
-    SdfPathSet visitedNodes;
-
-    _WalkGraph(
-        usdTerminal,
-        &network,
-        networkSelector,
-        &visitedNodes, 
-        shaderSourceTypes,
-        time,
-        timeVarying);
-
-    if (!TF_VERIFY(!nodes.empty())) return;
-
-    // _WalkGraph() inserts the terminal last in the nodes list.
-    HdMaterialNode& terminalNode = nodes.back();
-    
-    // Store terminals on material so backend can easily access them.
-    materialNetworkMap->terminals.push_back(terminalNode.path);
-
-    // Validate that idenfitier (info:id) is known to Sdr.
-    // Return empty network if it fails so backend can use fallback material.
-    SdrRegistry &shaderReg = SdrRegistry::GetInstance();
-    if (!shaderReg.GetNodeByIdentifier(terminalNode.identifier)) {
-        TF_WARN("Invalid info:id %s node: %s", 
-                terminalNode.identifier.GetText(),
-                terminalNode.path.GetText());
-        *materialNetworkMap = HdMaterialNetworkMap();
-    }
-};
-
-void 
-UsdImagingMaterialAdapter::_GetMaterialNetworkMap(
-    UsdPrim const &usdPrim, 
-    TfToken const& networkSelector,
-    HdMaterialNetworkMap *networkMap,
-    UsdTimeCode time,
-    bool* timeVarying) const
-{
-    UsdShadeMaterial material(usdPrim);
+    UsdShadeMaterial material(prim);
     if (!material) {
         TF_RUNTIME_ERROR("Expected material prim at <%s> to be of type "
                          "'UsdShadeMaterial', not type '%s'; ignoring",
-                         usdPrim.GetPath().GetText(),
-                         usdPrim.GetTypeName().GetText());
-        return;
+                         prim.GetPath().GetText(),
+                         prim.GetTypeName().GetText());
+        return VtValue();
     }
+
+    // Bind the usd stage's resolver context for correct asset resolution.
+    ArResolverContextBinder binder(prim.GetStage()->GetPathResolverContext());
+    ArResolverScopedCache resolverCache;
+
+    HdMaterialNetworkMap networkMap;
 
     const TfToken context = _GetMaterialNetworkSelector();
     TfTokenVector shaderSourceTypes = _GetShaderSourceTypes();
 
     if (UsdShadeShader s = material.ComputeSurfaceSource(context)) {
-        _BuildHdMaterialNetworkFromTerminal(
-            s, 
+        UsdImaging_BuildHdMaterialNetworkFromTerminal(
+            s.GetPrim(), 
             HdMaterialTerminalTokens->surface,
-            networkSelector,
             shaderSourceTypes,
-            networkMap,
-            time,
-            timeVarying);
+            &networkMap,
+            time);
     }
 
     if (UsdShadeShader d = material.ComputeDisplacementSource(context)) {
-        _BuildHdMaterialNetworkFromTerminal(
-            d,
+        UsdImaging_BuildHdMaterialNetworkFromTerminal(
+            d.GetPrim(),
             HdMaterialTerminalTokens->displacement,
-            networkSelector,
             shaderSourceTypes,
-            networkMap,
-            time,
-            timeVarying);
+            &networkMap,
+            time);
     }
 
     if (UsdShadeShader v = material.ComputeVolumeSource(context)) {
-        _BuildHdMaterialNetworkFromTerminal(
-            v,
+        UsdImaging_BuildHdMaterialNetworkFromTerminal(
+            v.GetPrim(),
             HdMaterialTerminalTokens->volume,
-            networkSelector,
             shaderSourceTypes,
-            networkMap,
-            time,
-            timeVarying);
+            &networkMap,
+            time);
     }
+
+    return VtValue(networkMap);
 }
 
 

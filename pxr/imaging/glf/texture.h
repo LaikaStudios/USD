@@ -28,19 +28,18 @@
 
 #include "pxr/pxr.h"
 #include "pxr/imaging/glf/api.h"
-#include "pxr/imaging/glf/image.h"
+#include "pxr/imaging/hio/image.h"
 #include "pxr/base/tf/declarePtrs.h"
 #include "pxr/base/tf/refPtr.h"
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/tf/weakPtr.h"
 #include "pxr/base/vt/dictionary.h"
 
-#include "pxr/imaging/garch/gl.h"
+#include "pxr/imaging/garch/glApi.h"
 
 #include <map>
 #include <string>
 #include <vector>
-#include <boost/noncopyable.hpp>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -60,7 +59,8 @@ TF_DECLARE_WEAK_AND_REF_PTRS(GlfTexture);
 /// A texture is typically defined by reading texture image data from an image
 /// file but a texture might also represent an attachment of a draw target.
 ///
-class GlfTexture : public TfRefBase, public TfWeakBase, boost::noncopyable {
+class GlfTexture : public TfRefBase, public TfWeakBase
+{
 public:
     /// \class Binding
     ///
@@ -89,6 +89,10 @@ public:
 
     GLF_API
     virtual ~GlfTexture() = 0;
+
+    // Disallow copies
+    GlfTexture(const GlfTexture&) = delete;
+    GlfTexture& operator=(const GlfTexture&) = delete;
 
     /// Returns the bindings to use this texture for the shader resource
     /// named \a identifier. If \a samplerId is specified, the bindings
@@ -133,7 +137,7 @@ public:
     size_t GetContentsID() const;
 
     GLF_API
-    GlfImage::ImageOriginLocation GetOriginLocation() const;
+    HioImage::ImageOriginLocation GetOriginLocation() const;
 
     GLF_API
     bool IsOriginLowerLeft() const;
@@ -143,7 +147,7 @@ protected:
     GlfTexture();
 
     GLF_API
-    GlfTexture(GlfImage::ImageOriginLocation originLocation);
+    GlfTexture(HioImage::ImageOriginLocation originLocation);
 
     GLF_API
     void _SetMemoryUsed(size_t size);
@@ -158,35 +162,14 @@ private:
     size_t _memoryUsed;
     size_t _memoryRequested;
     size_t _contentsID;
-    GlfImage::ImageOriginLocation _originLocation;
+    HioImage::ImageOriginLocation _originLocation;
 };
 
 class GlfTextureFactoryBase : public TfType::FactoryBase {
 public:
     virtual GlfTextureRefPtr New(const TfToken& texturePath,
-                        GlfImage::ImageOriginLocation originLocation) const = 0;
-    virtual GlfTextureRefPtr New(const TfTokenVector& texturePaths,
-                        GlfImage::ImageOriginLocation originLocation) const = 0;
+                        HioImage::ImageOriginLocation originLocation) const = 0;
 };
-
-template <class T>
-class GlfTextureFactory : public GlfTextureFactoryBase {
-public:
-    virtual GlfTextureRefPtr New(const TfToken& texturePath, 
-                                 GlfImage::ImageOriginLocation originLocation = 
-                                                GlfImage::OriginUpperLeft) const
-    {
-        return T::New(texturePath);
-    }
-
-    virtual GlfTextureRefPtr New(const TfTokenVector& texturePaths,
-                                 GlfImage::ImageOriginLocation originLocation = 
-                                                GlfImage::OriginUpperLeft) const
-    {
-        return TfNullPtr;
-    }
-};
-
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

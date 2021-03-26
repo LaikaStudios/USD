@@ -63,9 +63,25 @@ HdxPackageFullscreenShader()
 }
 
 TfToken
-HdxPackageRenderPassShader()
+HdxPackageRenderPassColorShader()
 {
-    static TfToken shader = _GetShaderPath("renderPassShader.glslfx");
+    static TfToken shader = _GetShaderPath("renderPassColorShader.glslfx");
+    return shader;
+}
+
+TfToken
+HdxPackageRenderPassColorAndSelectionShader()
+{
+    static TfToken shader =
+        _GetShaderPath("renderPassColorAndSelectionShader.glslfx");
+    return shader;
+}
+
+TfToken
+HdxPackageRenderPassColorWithOccludedSelectionShader()
+{
+    static TfToken shader =
+        _GetShaderPath("renderPassColorWithOccludedSelectionShader.glslfx");
     return shader;
 }
 
@@ -88,14 +104,6 @@ HdxPackageRenderPassShadowShader()
 {
     static TfToken shader = _GetShaderPath("renderPassShadowShader.glslfx");
     return shader;
-}
-
-TfToken
-HdxPackageSimpleLightingShader()
-{
-    static TfToken simpleLightingShader =
-        _GetShaderPath("simpleLightingShader.glslfx");
-    return simpleLightingShader;
 }
 
 TfToken

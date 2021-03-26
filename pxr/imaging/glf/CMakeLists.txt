@@ -14,26 +14,6 @@ endif()
 
 set(optionalLibs "")
 set(optionalIncludeDirs "")
-if (PXR_ENABLE_PTEX_SUPPORT)
-    list(APPEND optionalPublicClasses ptexMipmapTextureLoader)
-    list(APPEND optionalLibs ${PTEX_LIBRARY})
-    list(APPEND optionalIncludeDirs ${PTEX_INCLUDE_DIR})
-endif()
-
-set (optionalCppFiles "")
-set (plugInfo plugInfo_NoOIIO.json)
-if (PXR_BUILD_OPENIMAGEIO_PLUGIN)
-    set (plugInfo plugInfo.json)
-    list(APPEND optionalCppFiles oiioImage.cpp)
-    list(APPEND optionalLibs ${OIIO_LIBRARIES})
-    list(APPEND optionalIncludeDirs ${OIIO_INCLUDE_DIRS})
-endif()
-
-if (PXR_ENABLE_OPENVDB_SUPPORT)
-    list(APPEND optionalPublicClasses vdbTextureData)
-    list(APPEND optionalLibs ${OPENEXR_Half_LIBRARY} ${OPENVDB_LIBRARY})
-    list(APPEND optionalIncludeDirs ${OPENVDB_INCLUDE_DIR})
-endif()
 
 pxr_library(glf
     LIBRARIES
@@ -42,6 +22,7 @@ pxr_library(glf
         garch
         gf
         hf
+        hio
         js
         plug
         tf
@@ -49,49 +30,28 @@ pxr_library(glf
         sdf
         ${Boost_PYTHON_LIBRARY}
         ${OPENGL_gl_LIBRARY}
-        ${OPENGL_glu_LIBRARY}
-        ${GLEW_LIBRARY}
         ${X11_LIBRARIES}
-        ${OPENEXR_LIBRARY}
         ${optionalLibs}
 
     INCLUDE_DIRS
         ${Boost_INCLUDE_DIRS}
-        ${GLEW_INCLUDE_DIR}
-        ${OPENEXR_INCLUDE_DIRS}
         ${optionalIncludeDirs}
 
     PUBLIC_CLASSES
-        arrayTexture
-        baseTexture
-        baseTextureData
         bindingMap
         contextCaps
         diagnostic
         drawTarget
-        glew
         glContext
         glRawContext
-        image
-        imageRegistry
         info
-        package
-        ptexTexture
         simpleLight
         simpleLightingContext
         simpleMaterial
         simpleShadowArray
         texture
-        textureHandle
-        textureRegistry
-        udimTexture
         uniformBlock
         utils
-        uvTexture
-        uvTextureData
-        uvTextureStorage
-        uvTextureStorageData
-        vdbTexture
         ${optionalPublicClasses}
 
     PRIVATE_CLASSES
@@ -100,41 +60,29 @@ pxr_library(glf
 
     PUBLIC_HEADERS
         api.h
-        
-    PRIVATE_HEADERS
-        rankedTypeMap.h
-        stb/stb_image.h
-        stb/stb_image_resize.h
-        stb/stb_image_write.h
 
     CPPFILES
         ${optionalCppFiles}
-        stbImage.cpp
 
     PYTHON_CPPFILES
         moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp
-        wrapBaseTexture.cpp
         wrapDiagnostic.cpp
         wrapDrawTarget.cpp
-        wrapGlew.cpp
         wrapSimpleLight.cpp
         wrapSimpleMaterial.cpp
         wrapTexture.cpp
-        wrapTextureRegistry.cpp
-        wrapUVTexture.cpp
-        wrapUVTextureStorage.cpp
-        wrapVdbTexture.cpp
 
     PYMODULE_FILES
         __init__.py
 
     RESOURCE_FILES
-        ${plugInfo}:plugInfo.json 
-        shaders/ptexTexture.glslfx
+        plugInfo.json
         shaders/pcfShader.glslfx
         shaders/simpleLighting.glslfx
-        shaders/simpleShadowMapShader.glslfx
+
+    DOXYGEN_FILES
+        overview.dox
 )

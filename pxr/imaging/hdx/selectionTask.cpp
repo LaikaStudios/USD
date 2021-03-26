@@ -21,16 +21,12 @@
 // KIND, either express or implied. See the Apache License for the specific
 // language governing permissions and limitations under the Apache License.
 //
-#include "pxr/imaging/glf/glew.h"
-
 #include "pxr/imaging/hdx/selectionTask.h"
 
 #include "pxr/imaging/hdx/selectionTracker.h"
 #include "pxr/imaging/hdx/tokens.h"
 
-#include "pxr/imaging/hd/perfLog.h"
 #include "pxr/imaging/hd/renderIndex.h"
-#include "pxr/imaging/hd/resourceRegistry.h"
 #include "pxr/imaging/hd/sceneDelegate.h"
 #include "pxr/imaging/hd/vtBufferSource.h"
 
@@ -41,23 +37,21 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 // -------------------------------------------------------------------------- //
 
-typedef std::vector<HdBufferSourceSharedPtr> HdBufferSourceSharedPtrVector;
+using HdBufferSourceSharedPtrVector = std::vector<HdBufferSourceSharedPtr>;
 
 HdxSelectionTask::HdxSelectionTask(HdSceneDelegate* delegate,
                                    SdfPath const& id)
     : HdTask(id)
     , _lastVersion(-1)
     , _hasSelection(false)
-    , _params({false, GfVec4f(), GfVec4f()})
+    , _params({false, 0.5, GfVec4f(), GfVec4f()})
     , _selOffsetBar(nullptr)
     , _selUniformBar(nullptr)
     , _selPointColorsBar(nullptr)
 {
 }
 
-HdxSelectionTask::~HdxSelectionTask()
-{
-}
+HdxSelectionTask::~HdxSelectionTask() = default;
 
 void
 HdxSelectionTask::Sync(HdSceneDelegate* delegate,
@@ -79,6 +73,17 @@ HdxSelectionTask::Sync(HdSceneDelegate* delegate,
         _lastVersion = -1;
     }
 
+    // Update the selected objects on the tracker. This hook point
+    // allows applications to transform their notion of selected 
+    // objects into Hydra rprims. This is done during the Sync phase
+    // as a preparatory step to render selected prims in a separate
+    // task, where the collection for the render pass needs to be
+    // created during Sync.
+    HdxSelectionTrackerSharedPtr sel;
+    if (_GetTaskContextData(ctx, HdxTokens->selectionState, &sel)) {
+        sel->UpdateSelection(&(delegate->GetRenderIndex()));
+    }
+
     *dirtyBits = HdChangeTracker::Clean;
 }
 
@@ -87,12 +92,10 @@ HdxSelectionTask::Prepare(HdTaskContext* ctx,
                           HdRenderIndex* renderIndex)
 {
     HdxSelectionTrackerSharedPtr sel;
-    if (_GetTaskContextData(ctx, HdxTokens->selectionState, &sel)) {
-        sel->Prepare(renderIndex);
-    }
+    _GetTaskContextData(ctx, HdxTokens->selectionState, &sel);
 
     HdStResourceRegistrySharedPtr const& hdStResourceRegistry =
-        boost::dynamic_pointer_cast<HdStResourceRegistry>(
+        std::dynamic_pointer_cast<HdStResourceRegistry>(
             renderIndex->GetResourceRegistry());
 
     // Only Storm supports buffer array range. Without its registry
@@ -123,6 +126,8 @@ HdxSelectionTask::Prepare(HdTaskContext* ctx,
                                       HdTupleType { HdTypeFloatVec4, 1 });
             uniformSpecs.emplace_back(HdxTokens->selLocateColor,
                                       HdTupleType { HdTypeFloatVec4, 1 });
+            uniformSpecs.emplace_back(HdxTokens->occludedSelectionOpacity,
+                                      HdTupleType { HdTypeFloat, 1 });
             _selUniformBar = 
                 hdStResourceRegistry->AllocateUniformBufferArrayRange(
                     /*role*/HdxTokens->selection,
@@ -144,44 +149,46 @@ HdxSelectionTask::Prepare(HdTaskContext* ctx,
         //
         // Uniforms
         //
-        HdBufferSourceSharedPtrVector uniformSources;
-        uniformSources.push_back(HdBufferSourceSharedPtr(
-                new HdVtBufferSource(HdxTokens->selColor,
-                                     VtValue(_params.selectionColor))));
-        uniformSources.push_back(HdBufferSourceSharedPtr(
-                new HdVtBufferSource(HdxTokens->selLocateColor,
-                                     VtValue(_params.locateColor))));
-        hdStResourceRegistry->AddSources(_selUniformBar, uniformSources);
+        hdStResourceRegistry->AddSources(
+            _selUniformBar,
+            {
+                std::make_shared<HdVtBufferSource>(
+                    HdxTokens->selColor,
+                    VtValue(_params.selectionColor)),
+                std::make_shared<HdVtBufferSource>(
+                    HdxTokens->selLocateColor,
+                    VtValue(_params.locateColor)),
+                std::make_shared<HdVtBufferSource>(
+                    HdxTokens->occludedSelectionOpacity,
+                    VtValue(_params.occludedSelectionOpacity))
+            });
 
         //
         // Offsets
         //
         VtIntArray offsets;
-        _hasSelection = sel->GetSelectionOffsetBuffer(renderIndex, &offsets);
-        HdBufferSourceSharedPtr offsetSource(
-                new HdVtBufferSource(HdxTokens->hdxSelectionBuffer,
-                                     VtValue(offsets)));
-        hdStResourceRegistry->AddSource(_selOffsetBar, offsetSource);
+        _hasSelection = sel->GetSelectionOffsetBuffer(renderIndex,
+                _params.enableSelection, &offsets);
+        hdStResourceRegistry->AddSource(
+            _selOffsetBar,
+            std::make_shared<HdVtBufferSource>(
+                HdxTokens->hdxSelectionBuffer,
+                VtValue(offsets)));
 
         //
         // Point Colors
         //
-        VtVec4fArray ptColors = sel->GetSelectedPointColors();
-        HdBufferSourceSharedPtr ptColorSource(
-                new HdVtBufferSource(HdxTokens->selectionPointColors,
-                                     VtValue(ptColors)));
-        hdStResourceRegistry->AddSource(_selPointColorsBar, ptColorSource);
+        const VtVec4fArray ptColors = sel->GetSelectedPointColors();
+        hdStResourceRegistry->AddSource(
+            _selPointColorsBar,
+            std::make_shared<HdVtBufferSource>(
+                HdxTokens->selectionPointColors,
+                VtValue(ptColors)));
     }
 
-    if (_params.enableSelection && _hasSelection) {
-        (*ctx)[HdxTokens->selectionOffsets] = _selOffsetBar;
-        (*ctx)[HdxTokens->selectionUniforms] = _selUniformBar;
-        (*ctx)[HdxTokens->selectionPointColors] = _selPointColorsBar;
-    } else {
-        (*ctx)[HdxTokens->selectionOffsets] = VtValue();
-        (*ctx)[HdxTokens->selectionUniforms] = VtValue();
-        (*ctx)[HdxTokens->selectionPointColors] = VtValue();
-    }
+    (*ctx)[HdxTokens->selectionOffsets] = _selOffsetBar;
+    (*ctx)[HdxTokens->selectionUniforms] = _selUniformBar;
+    (*ctx)[HdxTokens->selectionPointColors] = _selPointColorsBar;
 }
 
 void

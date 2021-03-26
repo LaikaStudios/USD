@@ -28,7 +28,6 @@
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/type.h"
 
-#include <boost/make_shared.hpp>
 #include <iostream>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -71,10 +70,15 @@ HdRenderDelegate::HdRenderDelegate(HdRenderSettingsMap const& settingsMap)
     }
 }
 
+void
+HdRenderDelegate::SetDrivers(HdDriverVector const& drivers)
+{
+}
+
 HdRenderPassStateSharedPtr
 HdRenderDelegate::CreateRenderPassState() const
 {
-    return boost::make_shared<HdRenderPassState>();
+    return std::make_shared<HdRenderPassState>();
 }
 
 TfToken
@@ -95,12 +99,6 @@ HdRenderDelegate::GetMaterialNetworkSelector() const
     return TfToken();
 }
 
-bool
-HdRenderDelegate::IsPrimvarFilteringNeeded() const
-{
-    return false;
-}
-
 HdAovDescriptor
 HdRenderDelegate::GetDefaultAovDescriptor(TfToken const& name) const
 {
@@ -116,9 +114,15 @@ HdRenderDelegate::GetRenderSettingDescriptors() const
 void
 HdRenderDelegate::SetRenderSetting(TfToken const& key, VtValue const& value)
 {
-    _settingsMap[key] = value;
-    _settingsVersion++;
-
+    auto iter = _settingsMap.find(key);
+    if (iter == _settingsMap.end()) {
+        _settingsMap[key] = value;
+        ++_settingsVersion;
+    } else if (iter->second != value) {
+        iter->second = value;
+        ++_settingsVersion;
+    }
+    
     if (TfDebug::IsEnabled(HD_RENDER_SETTINGS)) {
         std::cout << "Render Setting [" << key << "] = " << value << std::endl;
     }
@@ -161,6 +165,12 @@ HdRenderDelegate::_PopulateDefaultSettings(
                 defaultSettings[i].defaultValue;
         }
     }
+}
+
+HdRenderParam *
+HdRenderDelegate::GetRenderParam() const 
+{
+    return nullptr;
 }
 
 bool

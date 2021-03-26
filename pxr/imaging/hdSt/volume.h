@@ -29,22 +29,16 @@
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/volume.h"
 
-#include "pxr/usd/sdf/path.h"
-
 PXR_NAMESPACE_OPEN_SCOPE
 
 class HdStDrawItem;
-class HdStMaterial;
-using HdStFieldResourceSharedPtr = boost::shared_ptr<class HdStFieldResource>;
-using HdStShaderCodeSharedPtr = boost::shared_ptr<class HdStShaderCode>;
-class HdSceneDelegate;
 
 /// Represents a Volume Prim.
 ///
 class HdStVolume final : public HdVolume {
 public:
     HDST_API
-    HdStVolume(SdfPath const& id, SdfPath const& instancerId = SdfPath());
+    HdStVolume(SdfPath const& id);
     HDST_API
     ~HdStVolume() override;
 
@@ -57,11 +51,18 @@ public:
               HdDirtyBits*     dirtyBits,
               TfToken const  &reprToken) override;
 
+    HDST_API
+    void Finalize(HdRenderParam *renderParam) override;
+
     /// Default step size used for raymarching
     static const float defaultStepSize;
 
     /// Default step size used for raymarching for lighting computation
     static const float defaultStepSizeLighting;
+
+    /// Default memory limit for a field texture (in Mb) if not
+    /// overridden by field prim with textureMemory.
+    static const float defaultMaxTextureMemoryPerField;
 
 protected:
     void _InitRepr(TfToken const &reprToken,
@@ -70,29 +71,15 @@ protected:
     HdDirtyBits _PropagateDirtyBits(HdDirtyBits bits) const override;
 
     void _UpdateRepr(HdSceneDelegate *sceneDelegate,
+                     HdRenderParam *renderParam,
                      TfToken const &reprToken,
                      HdDirtyBits *dirtyBitsState);
 
 private:
-    using _NameToFieldResource = std::unordered_map<
-        TfToken, HdStFieldResourceSharedPtr, TfToken::HashFunctor>;
-
-    const TfToken& _GetMaterialTag(const HdRenderIndex &renderIndex) const;
-
     void _UpdateDrawItem(HdSceneDelegate *sceneDelegate,
+                         HdRenderParam *renderParam,
                          HdStDrawItem *drawItem,
                          HdDirtyBits *dirtyBits);
-
-    _NameToFieldResource _ComputeNameToFieldResource(
-        HdSceneDelegate *sceneDelegate);
-
-    static HdStShaderCodeSharedPtr
-    _ComputeMaterialShaderAndBBox(
-        HdSceneDelegate * const sceneDelegate,
-        const HdStMaterial * const material,
-        const HdStShaderCodeSharedPtr &volumeShader,
-        const _NameToFieldResource &nameToFieldResource,
-        GfBBox3d * localVolumeBBox);
 
     HdReprSharedPtr _volumeRepr;
 };

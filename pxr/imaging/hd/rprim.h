@@ -37,7 +37,7 @@
 #include "pxr/base/gf/range3d.h"
 #include "pxr/base/arch/inttypes.h"
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -49,15 +49,16 @@ class HdMaterial;
 class HdRenderIndex;
 class HdRenderParam;
 
-typedef boost::shared_ptr<HdRepr> HdReprSharedPtr;
-typedef boost::shared_ptr<HdBufferSource> HdBufferSourceSharedPtr;
+using HdReprSharedPtr = std::shared_ptr<HdRepr>;
 
-typedef std::vector<struct HdBufferSpec> HdBufferSpecVector;
-typedef boost::shared_ptr<class HdBufferSource> HdBufferSourceSharedPtr;
-typedef std::vector<HdBufferSourceSharedPtr> HdBufferSourceVector;
-typedef boost::shared_ptr<HdBufferArrayRange> HdBufferArrayRangeSharedPtr;
-typedef boost::shared_ptr<class HdComputation> HdComputationSharedPtr;
-typedef std::vector<HdComputationSharedPtr> HdComputationVector;
+using HdBufferSourceSharedPtr = std::shared_ptr<HdBufferSource>;
+using HdBufferSourceSharedPtrVector = std::vector<HdBufferSourceSharedPtr>;
+
+using HdBufferSpecVector = std::vector<struct HdBufferSpec>;
+using HdBufferArrayRangeSharedPtr = std::shared_ptr<HdBufferArrayRange>;
+
+using HdComputationSharedPtr = std::shared_ptr<class HdComputation>;
+using HdComputationSharedPtrVector = std::vector<HdComputationSharedPtr>;
 
 /// \class HdRprim
 ///
@@ -67,8 +68,8 @@ typedef std::vector<HdComputationSharedPtr> HdComputationVector;
 class HdRprim {
 public:
     HD_API
-    HdRprim(SdfPath const& id,
-            SdfPath const& instancerId);
+    HdRprim(SdfPath const& id);
+
     HD_API
     virtual ~HdRprim();
 
@@ -152,9 +153,8 @@ public:
     /// These draw items should be constructed and cached beforehand by Sync().
     /// If no draw items exist, or reprToken cannot be found, nullptr will be
     /// returned.
-    using HdDrawItemPtrVector = std::vector<HdDrawItem*>;
     HD_API
-    const HdDrawItemPtrVector*
+    const HdRepr::DrawItemUniquePtrVector &
     GetDrawItems(TfToken const& reprToken) const;
 
     // ---------------------------------------------------------------------- //
@@ -191,11 +191,19 @@ public:
     /// this identifier.
     SdfPath const& GetMaterialId() const { return _materialId; }
 
+    /// Sets a new material binding to be used by this rprim
+    HD_API
+    void SetMaterialId(SdfPath const& materialId);
+
     /// The MaterialTag allows rprims to be organized into different
     /// collections based on properties of the prim's material.
     /// E.g. A renderer may wish to organize opaque and translucent prims 
     /// into different collections so they can be rendered seperately.
     TfToken const& GetMaterialTag() const { return _sharedData.materialTag; }
+
+    /// Sets the material tag used by the rprim.
+    HD_API
+    void SetMaterialTag(TfToken const& materialTag);
 
     HdReprSelector const& GetReprSelector() const {
         return _authoredReprSelector;
@@ -276,20 +284,9 @@ protected:
     void _UpdateVisibility(HdSceneDelegate *sceneDelegate,
                            HdDirtyBits *dirtyBits);
 
-    /// Sets a new material binding to be used by this rprim
     HD_API
-    void _SetMaterialId(HdChangeTracker &changeTracker,
-                        SdfPath const& materialId);
-
-    // methods to assist allocating and migrating shared primvar ranges
-    HD_API
-    static bool _IsEnabledSharedVertexPrimvar();
-
-    HD_API
-    uint64_t
-    _ComputeSharedPrimvarId(uint64_t baseId,
-                      HdBufferSourceVector const &sources,
-                      HdComputationVector const &computations) const;
+    void _UpdateInstancer(HdSceneDelegate *sceneDelegate,
+                          HdDirtyBits *dirtyBits);
 
 private:
     SdfPath _instancerId;

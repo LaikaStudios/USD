@@ -27,13 +27,13 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/glf/api.h"
 #include "pxr/base/arch/threads.h"
-#include <boost/noncopyable.hpp>
-#include <boost/shared_ptr.hpp>
+
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-typedef boost::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
+typedef std::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
 
 /// \class GlfGLContext
 ///
@@ -49,10 +49,15 @@ typedef boost::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
 /// This mechanism depends on the application code registering callbacks to
 /// provide access to its GL contexts.
 ///
-class GlfGLContext : public boost::noncopyable {
+class GlfGLContext
+{
 public:
     GLF_API
     virtual ~GlfGLContext();
+
+    // Disallow copies
+    GlfGLContext(const GlfGLContext&) = delete;
+    GlfGLContext& operator=(const GlfGLContext&) = delete;
 
     /// Returns an instance for the current GL context.
     GLF_API
@@ -162,7 +167,8 @@ protected:
 /// The underlying calls to make GL contexts current can be moderately
 /// expensive.  So, this mechanism should be used carefully.
 ///
-class GlfGLContextScopeHolder : boost::noncopyable {
+class GlfGLContextScopeHolder
+{
 public:
     /// Make the given context current and restore the current context
     /// when this object is destroyed.
@@ -171,6 +177,9 @@ public:
 
     GLF_API
     ~GlfGLContextScopeHolder();
+
+    GlfGLContextScopeHolder(const GlfGLContextScopeHolder&) = delete;
+    GlfGLContextScopeHolder& operator=(const GlfGLContextScopeHolder) = delete;
 
 protected:
     GLF_API
@@ -224,7 +233,8 @@ private:
 ///     };
 /// \endcode
 ///
-class GlfSharedGLContextScopeHolder : private GlfGLContextScopeHolder {
+class GlfSharedGLContextScopeHolder final : private GlfGLContextScopeHolder
+{
 public:
     GlfSharedGLContextScopeHolder() :
         GlfGLContextScopeHolder(_GetSharedContext())
@@ -242,6 +252,73 @@ private:
     }
 };
 
+#define API_GLF_HAS_ANY_GL_CONTEXT_SCOPE_HOLDER 1
+
+/// \class GlfAnyGLContextScopeHolder
+///
+/// Helper class to make the shared GL context current if there is no
+/// valid current context.
+///
+/// Example:
+///
+/// \code
+///     class MyTexture {
+///     public:
+///         MyTexture() : _textureId(0) {
+///             // Ensure we have valid GL context to allocate
+///             GlfAnyGLContextScopeHolder anyContextScopeHolder;
+///             glGenTextures(1, &_textureId);
+///         }
+///
+///         ~MyTexture() {
+///             // Ensure we have valid GL context to delete
+///             GlfAnyGLContextScopeHolder anyContextScopeHolder;
+///             glDeleteTextures(1, &_texureId);
+///             _textureId = 0;
+///         }
+///
+///         // The caller is responsible for making sure that a suitable
+///         // GL context is current before calling other methods.
+///
+///         void Bind() {
+///             glBindTexture(GL_TEXTURE_2D, _textureId);
+///         }
+///
+///         void Unbind() {
+///             glBindTexture(GL_TEXTURE_2D, 0);
+///         }
+///
+///         ...
+///
+///     private:
+///         GLuint _textureId;
+///
+///     };
+/// \endcode
+///
+class GlfAnyGLContextScopeHolder final : private GlfGLContextScopeHolder
+{
+public:
+    GlfAnyGLContextScopeHolder() :
+        GlfGLContextScopeHolder(_GetAnyContext())
+    {
+        // Do nothing
+    }
+
+private:
+    static GlfGLContextSharedPtr _GetAnyContext()
+    {
+        if (GlfGLContext::IsInitialized() && ArchIsMainThread()) {
+            GlfGLContextSharedPtr const current =
+                GlfGLContext::GetCurrentGLContext();
+            if (!(current && current->IsValid())) {
+                return GlfGLContext::GetSharedGLContext();
+            }
+        }
+        return GlfGLContextSharedPtr();
+    }
+};
+
 /// \class GlfGLContextRegistrationInterface
 ///
 /// Interface for registering a GlfGLContext system.
@@ -249,10 +326,17 @@ private:
 /// If you subclass GlfGLContext you should subclass this type and
 /// instantiate an instance on the heap.  It will be cleaned up
 /// automatically.
-class GlfGLContextRegistrationInterface : boost::noncopyable {
+class GlfGLContextRegistrationInterface
+{
 public:
     GLF_API
     virtual ~GlfGLContextRegistrationInterface();
+
+    // Disallow copies
+    GlfGLContextRegistrationInterface(
+        const GlfGLContextRegistrationInterface&) = delete;
+    GlfGLContextRegistrationInterface& operator=(
+        const GlfGLContextRegistrationInterface&) = delete;
 
     /// If this GLContext system supports a shared context this should
     /// return it.  This will be called at most once.

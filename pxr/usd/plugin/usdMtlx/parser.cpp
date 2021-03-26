@@ -30,6 +30,7 @@
 #include "pxr/usd/sdf/types.h"
 #include "pxr/usd/sdr/shaderNode.h"
 #include "pxr/usd/sdr/shaderProperty.h"
+#include "pxr/base/tf/fileUtils.h"
 #include "pxr/base/tf/pathUtils.h"
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/tf/stringUtils.h"
@@ -45,9 +46,6 @@ TF_DEFINE_PRIVATE_TOKENS(
 
     ((discoveryType, "mtlx"))
     ((sourceType, ""))
-
-    // The name to use for unnamed outputs.
-    ((defaultOutputName, "result"))
 );
 
 // A builder for shader nodes.  We find it convenient to build the
@@ -77,8 +75,8 @@ public:
                                   discoveryResult.family,
                                   context,
                                   discoveryResult.sourceType,
-                                  uri,
-                                  discoveryResult.resolvedUri,
+                                  definitionURI,
+                                  implementationURI,
                                   std::move(properties),
                                   std::move(metadata)));
     }
@@ -97,7 +95,8 @@ public:
     const NdrNodeDiscoveryResult& discoveryResult;
     bool valid;
 
-    std::string uri;
+    std::string definitionURI;
+    std::string implementationURI;
     TfToken context;
     NdrPropertyUniquePtrVec properties;
     NdrTokenMap metadata;
@@ -138,7 +137,7 @@ ShaderBuilder::AddProperty(
     else {
         // Get the sdr type.
         type = converted.shaderPropertyType;
-        if (converted.valueTypeName.IsArray()) {
+        if (converted.valueTypeName.IsArray() && converted.arraySize == 0) {
             metadata.emplace(SdrPropertyMetadata->IsDynamicArray, "");
         }
 
@@ -162,22 +161,17 @@ ShaderBuilder::AddProperty(
     }
 
     // Record the targets on inputs.
+    static const std::string targetName("target");
     if (!isOutput) {
-        auto&& target = element->getTarget();
+        auto&& target = element->getAttribute(targetName);
         if (!target.empty()) {
             metadata.emplace(SdrPropertyMetadata->Target, target);
         }
     }
 
-    // Mark parameters as not connectable.
-    // NOTE -- Unlike other metadata Connectable is true if missing.
-    if (!isOutput || element->isA<mx::Parameter>()) {
-        metadata.emplace(SdrPropertyMetadata->Connectable, "false");
-    }
-
-    // Record the colorspace on parameters and outputs.
+    // Record the colorspace on inputs and outputs.
     static const std::string colorspaceName("colorspace");
-    if (isOutput || element->isA<mx::Parameter>()) {
+    if (isOutput || element->isA<mx::Input>()) {
         auto&& colorspace = element->getAttribute(colorspaceName);
         if (!colorspace.empty() &&
                 colorspace != element->getParent()->getActiveColorSpace()) {
@@ -192,7 +186,7 @@ ShaderBuilder::AddProperty(
     // multiple outputs.  The default name would be the name of the
     // nodedef itself, which seems wrong.  We pick a different name.
     if (auto nodeDef = element->asA<mx::NodeDef>()) {
-        name = _tokens->defaultOutputName.GetString();
+        name = UsdMtlxTokens->DefaultOutputName.GetString();
     }
 
     // Remap property name.
@@ -208,7 +202,7 @@ ShaderBuilder::AddProperty(
                                   type,
                                   defaultValue,
                                   isOutput,
-                                  0,
+                                  converted.arraySize,
                                   metadata,
                                   hints,
                                   options)));
@@ -224,7 +218,13 @@ ParseMetadata(
 {
     auto&& value = element->getAttribute(attribute);
     if (!value.empty()) {
-        builder->metadata[key] = value;
+        // Change the MaterialX Texture node role from 'texture2d' to 'texture' 
+        if (key == SdrNodeMetadata->Role && value == "texture2d") {
+            builder->metadata[key] = "texture";
+        }
+        else {
+            builder->metadata[key] = value;
+        }
     }
 }
 
@@ -263,32 +263,27 @@ ParseElement(ShaderBuilder* builder, const mx::ConstNodeDefPtr& nodeDef)
         context = SdrNodeContext->Pattern;
     }
 
-    // Build the basic shader node info.
-    builder->context = context;
-    builder->uri     = UsdMtlxGetSourceURI(nodeDef);
+    // Build the basic shader node info. We are filling in implementationURI
+    // as a placeholder - it should get set to a more acccurate value by caller.
+    builder->context           = context;
+    builder->definitionURI     = UsdMtlxGetSourceURI(nodeDef);
+    builder->implementationURI = builder->definitionURI;
 
     // Metadata
     builder->metadata[SdrNodeMetadata->Label] = nodeDef->getNodeString();
     ParseMetadata(builder, SdrNodeMetadata->Category, nodeDef, "nodecategory");
     ParseMetadata(builder, SdrNodeMetadata->Help, nodeDef, "doc");
     ParseMetadata(builder, SdrNodeMetadata->Target, nodeDef, "target");
+    ParseMetadata(builder, SdrNodeMetadata->Role, nodeDef, "nodegroup");
 
     // XXX -- version
 
     // Properties
-    for (auto&& mtlxParameter: nodeDef->getParameters()) {
-        builder->AddProperty(mtlxParameter, false);
-    }
     for (auto&& mtlxInput: nodeDef->getInputs()) {
         builder->AddProperty(mtlxInput, false);
     }
-    if (type == mx::MULTI_OUTPUT_TYPE_STRING) {
-        for (auto&& mtlxOutput: nodeDef->getOutputs()) {
-            builder->AddProperty(mtlxOutput, true);
-        }
-    }
-    else if (context == SdrNodeContext->Pattern) {
-        builder->AddProperty(nodeDef, true);
+    for (auto&& mtlxOutput: nodeDef->getOutputs()) {
+        builder->AddProperty(mtlxOutput, true);
     }
 }
 
@@ -313,11 +308,6 @@ ParseElement(
     const NdrNodeDiscoveryResult& discoveryResult)
 {
     // Name remapping.
-    for (auto&& mtlxParameter: impl->getParameters()) {
-        builder->AddPropertyNameRemapping(
-            mtlxParameter->getName(),
-            mtlxParameter->getAttribute("implname"));
-    }
     for (auto&& mtlxInput: impl->getInputs()) {
         builder->AddPropertyNameRemapping(
             mtlxInput->getName(),
@@ -329,23 +319,38 @@ ParseElement(
         return;
     }
 
-    // Get the file.
+    // Get the implementation file.  Note we're not doing proper Ar asset
+    // localization here yet.
     auto filename = impl->getFile();
     if (filename.empty()) {
         builder->SetInvalid();
         return;
     }
+
     if (TfIsRelativePath(filename)) {
-        auto&& sourceUri = UsdMtlxGetSourceURI(impl);
-        if (sourceUri.empty() || TfIsRelativePath(sourceUri)) {
-            TF_DEBUG(NDR_PARSING).Msg("MaterialX implementation %s has "
-                "non-absolute path", sourceUri.c_str());
+        // The path is relative to some library path but we don't know which.
+        // We'll just check them all until we find an existing file.
+        // XXX -- Since we're likely to do this with every implementation
+        //        element we should consider some kind of cache so we don't
+        //        keep hitting the filesystem.
+        // XXX -- A future version of the asset resolver that has protocols
+        //        would make it easy for clients to resolve a relative path.
+        //        We should switch to that when available.
+        for (const auto& dir: UsdMtlxStandardLibraryPaths()) {
+            const auto path = TfStringCatPaths(dir, filename);
+            if (TfIsFile(path, true)) {
+                filename = path;
+                break;
+            }
+        }
+        if (TfIsRelativePath(filename)) {
+            TF_DEBUG(NDR_PARSING).Msg("MaterialX implementation %s could "
+                "not be found", filename.c_str());
             builder->SetInvalid();
             return;
         }
-        filename = TfGetPathName(sourceUri) + filename;
     }
-    builder->uri = filename;
+    builder->implementationURI = filename;
 
     // Function
     auto&& function = impl->getFunction();

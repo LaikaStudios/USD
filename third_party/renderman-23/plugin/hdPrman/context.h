@@ -51,28 +51,14 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class SdfPath;
 class HdSceneDelegate;
+class HdPrmanCamera;
 class HdPrmanRenderDelegate;
 
 // Context for HdPrman to communicate with an instance of PRMan.
 struct HdPrman_Context
 {
-    // Top-level entrypoint to PRMan.
-    // Singleton used to access RixInterfaces.
-    RixContext *rix = nullptr;
-    // RixInterface for PRManBegin/End.
-    RixRiCtl *ri = nullptr;
-    // RixInterface for Riley.
-    RixRileyManager *mgr = nullptr;
-    // Riley instance.
-    riley::Riley *riley = nullptr;
-
-    // Xcpt Handler
-    HdPrman_Xcpt xcpt;
-
-    // A fallback material to use for any geometry that
-    // does not have a bound material.
-    riley::MaterialId fallbackMaterial;
-    riley::MaterialId fallbackVolumeMaterial;
+    HDPRMAN_API
+    HdPrman_Context();
 
     // Convert any Hydra primvars that should be Riley instance attributes.
     HDPRMAN_API
@@ -136,11 +122,29 @@ struct HdPrman_Context
                         std::string& integratorName,
                         RtParamList& params);
 
+    // Set integrator params from the camera.
+    // This invokes any callbacks registered with
+    // RegisterIntegratorCallbackForCamera().
     HDPRMAN_API
-    bool IsInteractive() const;
+    void SetIntegratorParamsFromCamera(
+                        HdPrmanRenderDelegate *renderDelegate,
+                        HdPrmanCamera *camera,
+                        std::string const& integratorName,
+                        RtParamList& params);
 
+    // Callback to convert any camera settings that should become
+    // parameters on the integrator.
+    using IntegratorCameraCallback = void (*)
+        (HdPrmanRenderDelegate *renderDelegate,
+         HdPrmanCamera *camera,
+         std::string const& integratorName,
+         RtParamList &integratorParams);
+
+    // Register a callback to process integrator settings
     HDPRMAN_API
-    void SetIsInteractive(bool isInteractive);
+    static void 
+    RegisterIntegratorCallbackForCamera(
+        IntegratorCameraCallback const& callback);
 
     HDPRMAN_API
     bool IsShutterInstantaneous() const;
@@ -149,6 +153,29 @@ struct HdPrman_Context
     void SetInstantaneousShutter(bool instantaneousShutter);
 
     virtual ~HdPrman_Context() = default;
+
+    // Top-level entrypoint to PRMan.
+    // Singleton used to access RixInterfaces.
+    RixContext *rix;
+
+    // RixInterface for PRManBegin/End.
+    RixRiCtl *ri;
+
+    // RixInterface for Riley.
+    RixRileyManager *mgr;
+
+    // Riley instance.
+    riley::Riley *riley;
+
+    // Xcpt Handler
+    HdPrman_Xcpt xcpt;
+
+    // A fallback material to use for any geometry that
+    // does not have a bound material.
+    riley::MaterialId fallbackMaterial;
+
+    // Fallback material for volumes that don't have materials.
+    riley::MaterialId fallbackVolumeMaterial;
 
 private:
     // Refcounts for each category mentioned by a light link.
@@ -179,12 +206,8 @@ private:
     _HdToRileyCoordSysMap _hdToRileyCoordSysMap;
     std::mutex _coordSysMutex;
 
-    // If we are in interactive/viewport or not
-    bool _isInteractive = true;
-
     // A quick way to disable motion blur, making shutter close same as open
     bool _instantaneousShutter;
-
 };
 
 // Helper to convert matrix types, handling double->float conversion.

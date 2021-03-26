@@ -27,16 +27,18 @@
 #include "pxr/pxr.h"
 #include "pxr/usd/sdf/path.h"
 #include "pxr/imaging/hdx/api.h"
-#include "pxr/imaging/hd/task.h"
+#include "pxr/imaging/hdx/task.h"
 #include "pxr/imaging/hdx/tokens.h"
-#include "pxr/imaging/garch/gl.h"
+#include "pxr/imaging/hgi/attachmentDesc.h"
+#include "pxr/imaging/hgi/buffer.h"
+#include "pxr/imaging/hgi/graphicsPipeline.h"
+#include "pxr/imaging/hgi/resourceBindings.h"
+#include "pxr/imaging/hgi/shaderProgram.h"
+#include "pxr/imaging/hgi/texture.h"
+
 #include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
-
-class HdStGLSLProgram;
-typedef boost::shared_ptr<class HdStGLSLProgram> HdStGLSLProgramSharedPtr;
-typedef boost::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
 
 
 /// \class HdxColorCorrectionTask
@@ -44,29 +46,30 @@ typedef boost::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
 /// A task for performing color correction (and optionally color grading) on a 
 /// color buffer to transform its color for display.
 ///
-class HdxColorCorrectionTask : public HdTask
+class HdxColorCorrectionTask : public HdxTask
 {
 public:
     HDX_API
     HdxColorCorrectionTask(HdSceneDelegate* delegate, SdfPath const& id);
 
     HDX_API
-    virtual ~HdxColorCorrectionTask();
-
-    /// Sync the render pass resources
-    HDX_API
-    virtual void Sync(HdSceneDelegate* delegate,
-                      HdTaskContext* ctx,
-                      HdDirtyBits* dirtyBits) override;
+    ~HdxColorCorrectionTask() override;
 
     /// Prepare the tasks resources
     HDX_API
-    virtual void Prepare(HdTaskContext* ctx,
-                         HdRenderIndex* renderIndex) override;
+    void Prepare(HdTaskContext* ctx,
+                 HdRenderIndex* renderIndex) override;
 
     /// Execute the color correction task
     HDX_API
-    virtual void Execute(HdTaskContext* ctx) override;
+    void Execute(HdTaskContext* ctx) override;
+
+protected:
+    /// Sync the render pass resources
+    HDX_API
+    void _Sync(HdSceneDelegate* delegate,
+               HdTaskContext* ctx,
+               HdDirtyBits* dirtyBits) override;
 
 private:
     HdxColorCorrectionTask() = delete;
@@ -76,47 +79,52 @@ private:
     // Utility to create OCIO resources and returns the OCIO shadercode
     std::string _CreateOpenColorIOResources();
 
+    // Utility to check if OCIO should be used
+    bool _GetUseOcio() const;
+
     // Utility function to create the GL program for color correction
     bool _CreateShaderResources();
 
     // Utility function to create buffer resources.
     bool _CreateBufferResources();
 
-    // Utility function to setup the copy-framebuffer
-    bool _CreateFramebufferResources();
+    // Utility to create resource bindings
+    bool _CreateResourceBindings(HgiTextureHandle const& aovTexture);
 
-    // Copies the client framebuffer texture into ours
-    void _CopyTexture();
+    // Utility to create a pipeline
+    bool _CreatePipeline(HgiTextureHandle const& aovTexture);
 
-    /// Apply color correction to the currently bound framebuffer.
-    void _ApplyColorCorrection();
+    // Utility to create a texture sampler
+    bool _CreateSampler();
 
-    HdStGLSLProgramSharedPtr _shaderProgram;
-    GLuint _texture;
-    GLuint _texture3dLUT;
-    GfVec2i _textureSize;
-    GLint _locations[4];
-    GLuint _vertexBuffer;
+    // Apply color correction to the currently bound framebuffer.
+    void _ApplyColorCorrection(HgiTextureHandle const& aovTexture);
 
-    // XXX: Removed due to slowness in the IsCurrent() call when multiple
-    //      gl contexts are registered in GlfGLContextRegistry.
-    // GlfGLContextSharedPtr _owningContext;
+    // Destroy shader program and the shader functions it holds.
+    void _DestroyShaderProgram();
 
-    GLuint _copyFramebuffer;
-    GfVec2i _framebufferSize;
+    // Print shader compile errors.
+    void _PrintCompileErrors();
+
+    HgiAttachmentDesc _attachment0;
+    HgiBufferHandle _indexBuffer;
+    HgiBufferHandle _vertexBuffer;
+    HgiTextureHandle _texture3dLUT;
+    HgiSamplerHandle _sampler;
+    HgiShaderProgramHandle _shaderProgram;
+    HgiResourceBindingsHandle _resourceBindings;
+    HgiGraphicsPipelineHandle _pipeline;
 
     TfToken _colorCorrectionMode;
     std::string _displayOCIO;
     std::string _viewOCIO;
     std::string _colorspaceOCIO;
     std::string _looksOCIO;
-    int _lut3dSizeOCIO = 0;
+    int _lut3dSizeOCIO;
+
+    float _screenSize[2];
 
     TfToken _aovName;
-    SdfPath _aovBufferPath;
-    HdRenderBuffer* _aovBuffer;
-    class HgiGLTexture* _aovTexture;
-    GLuint _aovFramebuffer;
 };
 
 
@@ -124,18 +132,18 @@ private:
 ///
 /// ColorCorrectionTask parameters.
 ///
+/// `lut3dSizeOCIO`: We default to 65 (0-64) samples which works well with
+//                   OCIO resampling.
+///
 struct HdxColorCorrectionTaskParams
 {
-    HdxColorCorrectionTaskParams() {}
+    HDX_API
+    HdxColorCorrectionTaskParams();
     
-    // Resolution of bound framebuffer we are color correcting.
-    // This must be set if the viewport and framebuffer do not match.
-    GfVec2i framebufferSize = GfVec2i(0);
-
     // Switch between HdColorCorrectionTokens.
     // We default to 'disabled' to be backwards compatible with clients that are
     // still running with sRGB buffers.
-    TfToken colorCorrectionMode = HdxColorCorrectionTokens->disabled;
+    TfToken colorCorrectionMode;
 
     // 'display', 'view', 'colorspace' and 'look' are options the client may 
     // supply to configure OCIO. If one is not provided the default values
@@ -152,13 +160,10 @@ struct HdxColorCorrectionTaskParams
     std::string looksOCIO;
 
     // The width, height and depth used for the GPU LUT 3d texture.
-    // A value of 0 indicates we should use an appropriate default size.
-    int lut3dSizeOCIO = 0;
+    int lut3dSizeOCIO;
 
-    // When no AOV is provided ColorCorrection will operate on the default FB
-    // color attachment.
+    // The name of the aov to color correct
     TfToken aovName;
-    SdfPath aovBufferPath;
 };
 
 // VtValue requirements

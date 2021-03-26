@@ -36,11 +36,12 @@
 #include "pxr/base/tf/token.h"
 #include "pxr/base/vt/dictionary.h"
 
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-typedef boost::shared_ptr<class HdResourceRegistry> HdResourceRegistrySharedPtr;
+using HdResourceRegistrySharedPtr = std::shared_ptr<class HdResourceRegistry>;
 
 /// \class HdResourceRegistry
 ///
@@ -63,10 +64,6 @@ public:
     /// cleanup all buffers and remove if empty
     HD_API
     void GarbageCollect();
-
-    /// cleanup all Bprim registries
-    HD_API
-    void GarbageCollectBprims();
 
     /// Globally unique id for texture, see HdRenderIndex::GetTextureKey() for
     /// details.
@@ -98,12 +95,9 @@ protected:
     virtual void _Commit();
 
     /// Hooks for derived registries to perform additional GC when
-    /// GarbageCollect() or GarbageCollectBprims() is invoked.
+    /// GarbageCollect() is invoked.
     HD_API
     virtual void _GarbageCollect();
-
-    HD_API
-    virtual void _GarbageCollectBprims();
 
 private:
     // Not copyable

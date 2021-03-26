@@ -27,20 +27,20 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdx/api.h"
 #include "pxr/imaging/hdx/version.h"
-#include "pxr/imaging/hdx/progressiveTask.h"
+#include "pxr/imaging/hdx/task.h"
 #include "pxr/imaging/hdx/renderSetupTask.h"  // for short-term compatibility.
 #include "pxr/imaging/hdSt/renderPassState.h"
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
 class HdSceneDelegate;
 
-typedef boost::shared_ptr<class HdRenderPassState> HdRenderPassStateSharedPtr;
-typedef boost::shared_ptr<class HdRenderPass> HdRenderPassSharedPtr;
-typedef boost::shared_ptr<class HdxRenderSetupTask> HdxRenderSetupTaskSharedPtr;
+using HdRenderPassStateSharedPtr = std::shared_ptr<class HdRenderPassState>;
+using HdRenderPassSharedPtr = std::shared_ptr<class HdRenderPass>;
+using HdxRenderSetupTaskSharedPtr = std::shared_ptr<class HdxRenderSetupTask>;
 
 /// \class HdxRenderTask
 ///
@@ -61,45 +61,53 @@ typedef boost::shared_ptr<class HdxRenderSetupTask> HdxRenderSetupTaskSharedPtr;
 /// setup task you run before the render task, you can change the render
 /// parameters without incurring a hydra sync or rebuilding any resources.
 ///
-class HdxRenderTask : public HdxProgressiveTask
+class HdxRenderTask : public HdxTask
 {
 public:
     HDX_API
     HdxRenderTask(HdSceneDelegate* delegate, SdfPath const& id);
 
     HDX_API
-    virtual ~HdxRenderTask();
+    ~HdxRenderTask() override;
 
     /// Hooks for progressive rendering (delegated to renderpasses).
-    virtual bool IsConverged() const override;
-
-    /// Sync the render pass resources
     HDX_API
-    virtual void Sync(HdSceneDelegate* delegate,
-                      HdTaskContext* ctx,
-                      HdDirtyBits* dirtyBits) override;
+    bool IsConverged() const override;
 
     /// Prepare the tasks resources
     HDX_API
-    virtual void Prepare(HdTaskContext* ctx,
-                         HdRenderIndex* renderIndex) override;
+    void Prepare(HdTaskContext* ctx,
+                 HdRenderIndex* renderIndex) override;
 
     /// Execute render pass task
     HDX_API
-    virtual void Execute(HdTaskContext* ctx) override;
+    void Execute(HdTaskContext* ctx) override;
 
     /// Collect Render Tags used by the task.
     HDX_API
-    virtual const TfTokenVector &GetRenderTags() const override;
+    const TfTokenVector &GetRenderTags() const override;
 
 protected:
+    /// Sync the render pass resources
+    HDX_API
+    void _Sync(HdSceneDelegate* delegate,
+               HdTaskContext* ctx,
+               HdDirtyBits* dirtyBits) override;
+
     HDX_API
     HdRenderPassStateSharedPtr _GetRenderPassState(HdTaskContext *ctx) const;
 
-    // Returns the number of draw items used for rendering. This will only 
-    // return the correct result after HdxRenderTask::Prepare() has been called.
+    // XXX: Storm specific API
+    // While HdDrawItem is currently a core-Hydra concept, it'll be moved
+    // to Storm. Until then, allow querying the render pass to know if there's
+    // draw submission work.
+
+    // Returns whether the render pass has any draw items to submit.
+    // For non-Storm backends, this returns true.
+    // When using with Storm tasks, make sure to call it after
+    // HdxRenderTask::Prepare().
     HDX_API
-    size_t _GetDrawItemCount() const;
+    bool _HasDrawItems() const;
 
 private:
     HdRenderPassSharedPtr _pass;
@@ -108,10 +116,14 @@ private:
     // Optional internal render setup task, for params unpacking.
     HdxRenderSetupTaskSharedPtr _setupTask;
 
+    // XXX: Storm specific API
     // Setup additional state that HdStRenderPassState requires.
-    // XXX: This should be moved to hdSt!
     void _SetHdStRenderPassState(HdTaskContext *ctx,
                                  HdStRenderPassState *renderPassState);
+    
+    // Inspect the AOV bindings to determine if any of them need to be cleared.
+    bool _NeedToClearAovs(HdRenderPassStateSharedPtr const &renderPassState)
+        const;
 
     HdxRenderTask() = delete;
     HdxRenderTask(const HdxRenderTask &) = delete;

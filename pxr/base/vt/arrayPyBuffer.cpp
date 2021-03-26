@@ -33,6 +33,8 @@
 
 #include "pxr/base/gf/traits.h"
 
+#include "pxr/base/tf/preprocessorUtilsLite.h"
+#include "pxr/base/tf/py3Compat.h"
 #include "pxr/base/tf/pyLock.h"
 #include "pxr/base/tf/pyUtils.h"
 
@@ -203,14 +205,7 @@ struct Vt_ArrayBufferWrapper
         }
     }
 
-    void MakeWritable() {
-        // Invoke the .data() method on array.  As a side effect this will
-        // detach it from any shared storage, ensuring that any modifications
-        // will not affect other VtArray instances.
-        (void)array.data();
-    }
-
-    Array array;
+    const Array array;
 
     Vt_PyShape<Vt_GetElementShape<value_type>().size() + 1> shape;
     Vt_PyShape<Vt_GetElementShape<value_type>().size() + 1> strides;
@@ -219,6 +214,7 @@ struct Vt_ArrayBufferWrapper
 ////////////////////////////////////////////////////////////////////////
 // Python buffer protocol entry points.
 
+#if PY_MAJOR_VERSION == 2
 // Python's getreadbuf interface function.
 template <class T>
 Py_ssize_t
@@ -229,7 +225,7 @@ Vt_getreadbuf(PyObject *self, Py_ssize_t segment, void **ptrptr) {
         return -1;
     }
     T &selfT = bp::extract<T &>(self);
-    *ptrptr = static_cast<void *>(selfT.data());
+    *ptrptr = const_cast<void *>(static_cast<void const *>(selfT.cdata()));
     // Return size in bytes.
     return selfT.size() * sizeof(typename T::value_type);
 }
@@ -238,8 +234,7 @@ Vt_getreadbuf(PyObject *self, Py_ssize_t segment, void **ptrptr) {
 template <class T>
 Py_ssize_t
 Vt_getwritebuf(PyObject *self, Py_ssize_t segment, void **ptrptr) {
-    PyErr_SetString(PyExc_ValueError, "writable buffers supported only with "
-                    "new-style buffer protocol.");
+    PyErr_SetString(PyExc_ValueError, "writable buffers unsupported");
     return -1;
 }
 
@@ -259,6 +254,7 @@ Py_ssize_t
 Vt_getcharbuf(PyObject *self, Py_ssize_t segment, const char **ptrptr) {
     return Vt_getreadbuf<T>(self, segment, (void **) ptrptr);
 }
+#endif
 
 // Python's releasebuffer interface function.
 template <class T>
@@ -285,19 +281,23 @@ Vt_getbuffer(PyObject *self, Py_buffer *view, int flags)
         return -1;
     }
 
+    // We don't support writable buffers, since we'd have to make a copy (in
+    // general) and guaranteed O(1) buffer requests outweigh that.  Clients can
+    // always make copies themselves if they want a writable thing.
+    if ((flags & PyBUF_WRITABLE) == PyBUF_WRITABLE) {
+        PyErr_SetString(PyExc_ValueError, "writable buffers unsupported");
+        return -1;
+    }
+
     T &array = bp::extract<T &>(self);
     auto wrapper = std::unique_ptr<Vt_ArrayBufferWrapper<T>>(
         new Vt_ArrayBufferWrapper<T>(array));
 
-    bool writable = ((flags & PyBUF_WRITABLE) == PyBUF_WRITABLE);
-
-    if (writable)
-        wrapper->MakeWritable();
-
     view->obj = self;
-    view->buf = static_cast<void *>(wrapper->array.data());
+    view->buf =
+        const_cast<void *>(static_cast<void const *>(wrapper->array.cdata()));
     view->len = wrapper->array.size() * sizeof(value_type);
-    view->readonly = static_cast<int>(!writable);
+    view->readonly = 1;
     view->itemsize = sizeof(typename Vt_GetSubElementType<value_type>::Type);
     if ((flags & PyBUF_FORMAT) == PyBUF_FORMAT) {
         view->format = Vt_FormatStr<value_type>::Get();
@@ -332,10 +332,12 @@ struct Vt_ArrayBufferProcs
 };
 template <class T>
 PyBufferProcs Vt_ArrayBufferProcs<T>::procs = {
+#if PY_MAJOR_VERSION == 2
     (readbufferproc) Vt_getreadbuf<T>,   /*bf_getreadbuffer*/
     (writebufferproc) Vt_getwritebuf<T>, /*bf_getwritebuffer*/
     (segcountproc) Vt_getsegcount<T>,    /*bf_getsegcount*/
     (charbufferproc) Vt_getcharbuf<T>,   /*bf_getcharbuffer*/
+#endif
     (getbufferproc) Vt_getbuffer<T>,
     (releasebufferproc) Vt_releasebuffer<T>,
 };
@@ -362,8 +364,8 @@ Vt_AddBufferProtocol()
     // to indicate that this type supports the buffer protocol.
     auto *typeObj = reinterpret_cast<PyTypeObject *>(cls.ptr());
     typeObj->tp_as_buffer = &Vt_ArrayBufferProcs<ArrayType>::procs;
-    typeObj->tp_flags |= (Py_TPFLAGS_HAVE_NEWBUFFER |
-                          Py_TPFLAGS_HAVE_GETCHARBUFFER);
+    typeObj->tp_flags |= (TfPy_TPFLAGS_HAVE_NEWBUFFER |
+                          TfPy_TPFLAGS_HAVE_GETCHARBUFFER);
 }
 
 
@@ -602,14 +604,14 @@ VT_API void Vt_AddBufferProtocolSupportToVtArrays()
 {
 
 // Add the buffer protocol support to every array type that we support it for.
-#define VT_ADD_BUFFER_PROTOCOL(r, unused, elem)                         \
-    Vt_AddBufferProtocol<VtArray<VT_TYPE(elem)> >();                    \
-    VtValue::RegisterCast<TfPyObjWrapper, VtArray<VT_TYPE(elem)> >(     \
-        Vt_CastPyObjToArray<VT_TYPE(elem)>);                            \
-    VtValue::RegisterCast<vector<VtValue>, VtArray<VT_TYPE(elem)> >(    \
-        Vt_CastVectorToArray<VT_TYPE(elem)>);                           \
-    boost::python::def(BOOST_PP_STRINGIZE(VT_TYPE_NAME(elem))           \
-                        "ArrayFromBuffer",                              \
+#define VT_ADD_BUFFER_PROTOCOL(r, unused, elem)                      \
+    Vt_AddBufferProtocol<VtArray<VT_TYPE(elem)> >();                 \
+    VtValue::RegisterCast<TfPyObjWrapper, VtArray<VT_TYPE(elem)> >(  \
+        Vt_CastPyObjToArray<VT_TYPE(elem)>);                         \
+    VtValue::RegisterCast<vector<VtValue>, VtArray<VT_TYPE(elem)> >( \
+        Vt_CastVectorToArray<VT_TYPE(elem)>);                        \
+    boost::python::def(TF_PP_STRINGIZE(VT_TYPE_NAME(elem))           \
+                        "ArrayFromBuffer",                           \
                         Vt_WrapArrayFromBuffer<VT_TYPE(elem)>);
 
 BOOST_PP_SEQ_FOR_EACH(VT_ADD_BUFFER_PROTOCOL, ~, VT_ARRAY_PYBUFFER_TYPES)

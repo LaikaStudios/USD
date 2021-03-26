@@ -31,7 +31,6 @@
 #include "pxr/pxr.h"
 #include "pxr/base/tf/api.h"
 #include "pxr/base/tf/cxxCast.h"
-#include "pxr/base/tf/traits.h"
 #include "pxr/base/tf/type.h"
 #include "pxr/base/tf/weakPtr.h"
 
@@ -214,6 +213,19 @@ public:
     _Data _ptrStorage;
 };
 
+// TfHash support.  We don't want to choose the TfAnyWeakPtr overload unless the
+// passed argument is exactly TfAnyWeakPtr.  By making this a function template
+// that's only enabled for TfAnyWeakPtr, C++ will not perform implicit
+// conversions since T is deduced.
+template <class HashState,
+          class T, class = typename std::enable_if<
+                       std::is_same<T, TfAnyWeakPtr>::value>::type>
+inline void
+TfHashAppend(HashState &h, const T& ptr)
+{
+    h.Append(ptr.GetUniqueIdentifier());
+}
+
 template <class Ptr>
 TfAnyWeakPtr::_PointerHolder<Ptr>::~_PointerHolder() {}
 
@@ -297,7 +309,7 @@ template <class Ptr>
 bool
 TfAnyWeakPtr::_PointerHolder<Ptr>::_IsConst() const
 {
-    return TfTraits::Type<typename Ptr::DataType>::isConst;
+    return std::is_const<typename Ptr::DataType>::value;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

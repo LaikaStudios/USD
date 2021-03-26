@@ -65,6 +65,8 @@ struct NdrNodeDiscoveryResult;
 /// OSL Metadata Key    | Destination
 /// ------------------- | ------------
 /// connectable         | IsConnectable()
+/// sdrDefinitionName   | renames parameter, sends original osl param name to 
+///                     | SdrShaderProperty::GetImplementationName()
 /// page                | GetPage()
 /// help                | GetHelp()
 /// label               | GetLabel()
@@ -122,11 +124,13 @@ private:
     // Gets a vector of properties that are present on the specified OSL
     // query object
     NdrPropertyUniquePtrVec _getNodeProperties(
+        const RixShaderQuery* sq,
         const NdrNodeDiscoveryResult& discoveryResult) const;
 
     // Gets all metadata for the node that's present on the specified OSL
     // query object
     NdrTokenMap _getNodeMetadata(
+        const RixShaderQuery* sq,
         const NdrTokenMap &baseMetadata) const;
 
     // Gets all metadata for the specified OSL parameter
@@ -150,10 +154,6 @@ private:
         size_t arraySize,
         const NdrTokenMap& metadata
     ) const;
-
-private:
-    RixShaderQuery* m_sq;
-
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

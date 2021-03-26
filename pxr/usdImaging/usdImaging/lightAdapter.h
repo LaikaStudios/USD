@@ -101,6 +101,20 @@ public:
     virtual void MarkVisibilityDirty(UsdPrim const& prim,
                                      SdfPath const& cachePath,
                                      UsdImagingIndexProxy* index);
+
+    USDIMAGING_API
+    virtual void MarkLightParamsDirty(UsdPrim const& prim,
+                                      SdfPath const& cachePath,
+                                      UsdImagingIndexProxy* index);
+
+    // ---------------------------------------------------------------------- //
+    /// \name Utilities 
+    // ---------------------------------------------------------------------- //
+
+    USDIMAGING_API
+    VtValue GetMaterialResource(UsdPrim const &prim,
+                                SdfPath const& cachePath, 
+                                UsdTimeCode time) const override;
 };
 
 

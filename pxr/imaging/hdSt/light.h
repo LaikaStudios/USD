@@ -31,43 +31,35 @@
 
 #include "pxr/imaging/glf/simpleLight.h"
 
-#include "pxr/base/tf/staticTokens.h"
-#include "pxr/base/vt/dictionary.h"
 #include "pxr/base/vt/value.h"
-
-#include <boost/shared_ptr.hpp>
-
-#include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-
-class HdResourceRegistry;
-class HdSceneDelegate;
-typedef boost::shared_ptr<class HdStLight> HdStLightSharedPtr;
-typedef std::vector<class HdStLight const *> HdStLightPtrConstVector;
-typedef boost::shared_ptr<class HdStTextureResource> 
-    HdStTextureResourceSharedPtr;
-typedef boost::shared_ptr<class HdStResourceRegistry>
-    HdStResourceRegistrySharedPtr;
-
 /// \class HdStLight
 ///
-/// A light model, used in conjunction with HdRenderPass.
+/// A light model for use in Storm.
+/// Note: This class simply stores the light parameters and relies on an
+/// external task (HdxSimpleLightTask) to upload them to the GPU.
 ///
 class HdStLight final : public HdLight {
 public:
     HDST_API
     HdStLight(SdfPath const & id, TfToken const &lightType);
     HDST_API
-    virtual ~HdStLight();
+    ~HdStLight() override;
 
     /// Synchronizes state from the delegate to this object.
     HDST_API
-    virtual void Sync(HdSceneDelegate *sceneDelegate,
-                      HdRenderParam   *renderParam,
-                      HdDirtyBits     *dirtyBits) override;
-
+    void Sync(HdSceneDelegate *sceneDelegate,
+              HdRenderParam   *renderParam,
+              HdDirtyBits     *dirtyBits) override;
+    
+    /// Finalizes object resources. This function might not delete resources,
+    /// but it should deal with resource ownership so that the sprim is
+    /// deletable.
+    HDST_API
+    void Finalize(HdRenderParam *renderParam) override;
+    
     /// Accessor for tasks to get the parameters cached in this object.
     HDST_API
     VtValue Get(TfToken const &token) const;
@@ -76,38 +68,27 @@ public:
     /// change tracker for use in the first sync of this prim.
     /// Typically this would be all dirty bits.
     HDST_API
-    virtual HdDirtyBits GetInitialDirtyBitsMask() const override;
-
+    HdDirtyBits GetInitialDirtyBitsMask() const override;
+    
 private:
-    /// Converts area lights (sphere lights and distant lights) into
-    /// glfSimpleLights and inserts them in the dictionary so 
-    /// SimpleLightTask can use them later on as if they were regular lights.
+    // Converts area lights (sphere lights and distant lights) into
+    // glfSimpleLights and inserts them in the dictionary so 
+    // SimpleLightTask can use them later on as if they were regular lights.
     GlfSimpleLight _ApproximateAreaLight(SdfPath const &id, 
                                          HdSceneDelegate *sceneDelegate);
 
-
-    /// Loads the Environment map texture and adds comppute tasks
-    /// to process that environment map and precalculate the different 
-    /// textures needed for IBL 
+    // Collects data such as the environment map texture path for a
+    // dome light. The lighting shader is responsible for pre-calculating
+    // the different textures needed for IBL.
     GlfSimpleLight _PrepareDomeLight(SdfPath const &id, 
-                                    HdSceneDelegate *sceneDelegate);
+                                     HdSceneDelegate *sceneDelegate);
     
-    /// called by _CreateDomeLight to add the compute tasks
-    void _SetupComputations(GLuint sourceTexture, 
-                            HdStResourceRegistry *resourceRegistry);
-
 private:
     // Stores the internal light type of this light.
     TfToken _lightType;
 
     // Cached states.
     TfHashMap<TfToken, VtValue, TfToken::HashFunctor> _params;
-
-    HdStTextureResourceSharedPtr _textureResource;
-
-    GLuint _irradianceTexture;
-    GLuint _prefilterTexture;
-    GLuint _brdfTexture;
 };
 
 

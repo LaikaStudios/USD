@@ -23,7 +23,7 @@
 //
 #include "pxr/imaging/garch/glPlatformDebugContext.h"
 
-#include "pxr/imaging/garch/gl.h"
+#include "pxr/imaging/garch/glApi.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/getenv.h"
 #include "pxr/base/arch/defines.h"
@@ -213,8 +213,7 @@ GarchGLPlatformDebugContext::GarchGLPlatformDebugContext(int majorVersion,
                                                        int minorVersion,
                                                        bool coreProfile,
                                                        bool directRendering)
-    : _private(NULL)
-    , _coreProfile(coreProfile)
+    : _coreProfile(coreProfile)
 
 {
     if (!GarchGLPlatformDebugContext::IsEnabledDebugOutput()) {

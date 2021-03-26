@@ -27,6 +27,7 @@
 /// \file usdImaging/pointInstancerAdapter.h
 
 #include "pxr/pxr.h"
+#include "pxr/base/tf/denseHashMap.h"
 #include "pxr/usdImaging/usdImaging/version.h"
 #include "pxr/usdImaging/usdImaging/primAdapter.h"
 #include "pxr/usdImaging/usdImaging/gprimAdapter.h"
@@ -38,9 +39,10 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 /// Delegate support for UsdGeomPointInstancer
 ///
-class UsdImagingPointInstancerAdapter : public UsdImagingPrimAdapter {
+class UsdImagingPointInstancerAdapter : public UsdImagingPrimAdapter 
+{
 public:
-    typedef UsdImagingPrimAdapter BaseAdapter;
+    using BaseAdapter = UsdImagingPrimAdapter;
 
     UsdImagingPointInstancerAdapter()
         : BaseAdapter()
@@ -50,7 +52,7 @@ public:
     virtual SdfPath Populate(
         UsdPrim const& prim,
         UsdImagingIndexProxy* index,
-        UsdImagingInstancerContext const* instancerContext = NULL) override;
+        UsdImagingInstancerContext const* instancerContext = nullptr) override;
 
     virtual bool ShouldCullChildren() const override;
 
@@ -79,7 +81,8 @@ public:
 
     virtual HdDirtyBits ProcessPropertyChange(UsdPrim const& prim,
                                               SdfPath const& cachePath,
-                                              TfToken const& propertyName) override;
+                                              TfToken const& propertyName) 
+                                                override;
 
     virtual void ProcessPrimResync(SdfPath const& cachePath,
                                    UsdImagingIndexProxy* index) override;
@@ -116,48 +119,126 @@ public:
                                      SdfPath const& cachePath,
                                      UsdImagingIndexProxy* index) override;
 
-
-
     // ---------------------------------------------------------------------- //
     /// \name Instancing
     // ---------------------------------------------------------------------- //
 
-    virtual SdfPath GetPathForInstanceIndex(SdfPath const &protoCachePath,
-                                            int protoIndex,
-                                            int *instanceCountForThisLevel,
-                                            int *instancerIndex,
-                                            SdfPath *masterCachePath = NULL,
-                                            SdfPathVector *
-                                                instanceContext = NULL) override;
+    GfMatrix4d GetInstancerTransform(UsdPrim const& instancerPrim,
+                                     SdfPath const& instancerPath,
+                                     UsdTimeCode time) const override;
 
-    virtual size_t
-    SampleInstancerTransform(UsdPrim const& instancerPrim,
-                             SdfPath const& instancerPath,
-                             UsdTimeCode time,
-                             size_t maxNumSamples,
-                             float *sampleTimes,
-                             GfMatrix4d *sampleValues) override;
+    size_t SampleInstancerTransform(UsdPrim const& instancerPrim,
+                                    SdfPath const& instancerPath,
+                                    UsdTimeCode time,
+                                    size_t maxNumSamples,
+                                    float *sampleTimes,
+                                    GfMatrix4d *sampleValues) override;
 
-    virtual size_t
-    SampleTransform(UsdPrim const& prim, 
+    SdfPath GetInstancerId(
+        UsdPrim const& usdPrim,
+        SdfPath const& cachePath) const override;
+
+    SdfPathVector GetInstancerPrototypes(
+        UsdPrim const& usdPrim,
+        SdfPath const& cachePath) const override;
+
+    GfMatrix4d GetTransform(UsdPrim const& prim, 
+                            SdfPath const& cachePath,
+                            UsdTimeCode time,
+                            bool ignoreRootTransform = false) const override;
+
+    size_t SampleTransform(UsdPrim const& prim, 
+                           SdfPath const& cachePath,
+                           UsdTimeCode time, 
+                           size_t maxNumSamples, 
+                           float  *sampleTimes,
+                           GfMatrix4d *sampleValues) override;
+
+    size_t SamplePrimvar(UsdPrim const& usdPrim,
+                         SdfPath const& cachePath,
+                         TfToken const& key,
+                         UsdTimeCode time,
+                         size_t maxNumSamples, 
+                         float *sampleTimes,
+                         VtValue *sampleValues) override;
+
+    PxOsdSubdivTags GetSubdivTags(UsdPrim const& usdPrim,
+                                  SdfPath const& cachePath,
+                                  UsdTimeCode time) const override;
+
+    bool GetVisible(UsdPrim const& prim, 
                     SdfPath const& cachePath,
-                    UsdTimeCode time, 
-                    size_t maxNumSamples, 
-                    float *sampleTimes,
-                    GfMatrix4d *sampleValues) override;
+                    UsdTimeCode time) const override;
 
-    virtual size_t
-    SamplePrimvar(UsdPrim const& usdPrim,
-                  SdfPath const& cachePath,
-                  TfToken const& key,
-                  UsdTimeCode time,
-                  size_t maxNumSamples, 
-                  float *sampleTimes,
-                  VtValue *sampleValues) override;
+    TfToken GetPurpose(
+        UsdPrim const& usdPrim, 
+        SdfPath const& cachePath,
+        TfToken const& instanceInheritablePurpose) const override;
 
-    virtual PxOsdSubdivTags GetSubdivTags(UsdPrim const& usdPrim,
-                                          SdfPath const& cachePath,
-                                          UsdTimeCode time) const override;
+    VtValue GetTopology(UsdPrim const& prim,
+                        SdfPath const& cachePath,
+                        UsdTimeCode time) const override;
+
+    HdCullStyle GetCullStyle(UsdPrim const& prim,
+                             SdfPath const& cachePath,
+                             UsdTimeCode time) const override;
+
+    GfRange3d GetExtent(UsdPrim const& usdPrim, 
+                        SdfPath const& cachePath, 
+                        UsdTimeCode time) const override;
+
+    bool GetDoubleSided(UsdPrim const& usdPrim, 
+                   SdfPath const& cachePath, 
+                   UsdTimeCode time) const override;
+
+
+    SdfPath GetMaterialId(UsdPrim const& prim, 
+                          SdfPath const& cachePath, 
+                          UsdTimeCode time) const override;
+
+    HdExtComputationInputDescriptorVector
+    GetExtComputationInputs(UsdPrim const& prim,
+                            SdfPath const& cachePath,
+                            const UsdImagingInstancerContext* instancerContext)
+                                    const override;
+
+    HdExtComputationOutputDescriptorVector
+    GetExtComputationOutputs(UsdPrim const& prim,
+                             SdfPath const& cachePath,
+                             const UsdImagingInstancerContext* instancerContext)
+                                    const override;
+
+    HdExtComputationPrimvarDescriptorVector
+    GetExtComputationPrimvars(
+            UsdPrim const& prim,
+            SdfPath const& cachePath,
+            HdInterpolation interpolation,
+            const UsdImagingInstancerContext* instancerContext) const override;
+
+    VtValue 
+    GetExtComputationInput(
+            UsdPrim const& prim,
+            SdfPath const& cachePath,
+            TfToken const& name,
+            UsdTimeCode time,
+            const UsdImagingInstancerContext* instancerContext) const override;
+
+    std::string 
+    GetExtComputationKernel(
+            UsdPrim const& prim,
+            SdfPath const& cachePath,
+            const UsdImagingInstancerContext* instancerContext) const override;
+
+    VtValue
+    GetInstanceIndices(UsdPrim const& instancerPrim,
+                       SdfPath const& instancerCachePath,
+                       SdfPath const& prototypeCachePath,
+                       UsdTimeCode time) const override;
+
+    VtValue Get(UsdPrim const& prim,
+                SdfPath const& cachePath,
+                TfToken const& key,
+                UsdTimeCode time) const override;
 
     // ---------------------------------------------------------------------- //
     /// \name Nested instancing support
@@ -169,23 +250,21 @@ public:
         UsdTimeCode time) const override;
 
     // ---------------------------------------------------------------------- //
-    /// \name Selection
+    /// \name Picking & selection
     // ---------------------------------------------------------------------- //
 
-    virtual bool PopulateSelection(
-                                HdSelection::HighlightMode const& highlightMode,
-                                SdfPath const &cachePath,
-                                UsdPrim const &usdPrim,
-                                VtIntArray const &instanceIndices,
-                                HdSelectionSharedPtr const &result) override;
+    virtual SdfPath GetScenePrimPath(
+        SdfPath const& cachePath,
+        int instanceIndex,
+        HdInstancerContext *instancerContext) const override;
 
-    virtual SdfPath GetPathForInstanceIndex(SdfPath const &instancerCachePath,
-                                            SdfPath const &protoCachePath,
-                                            int protoIndex,
-                                            int *instanceCountForThisLevel,
-                                            int *instancerIndex,
-                                            SdfPath *masterCachePath,
-                                            SdfPathVector *instanceContext) override;
+    virtual bool PopulateSelection(
+        HdSelection::HighlightMode const& highlightMode,
+        SdfPath const &cachePath,
+        UsdPrim const &usdPrim,
+        int const hydraInstanceIndex,
+        VtIntArray const &parentInstanceIndices,
+        HdSelectionSharedPtr const &result) const override;
 
     // ---------------------------------------------------------------------- //
     /// \name Volume field information
@@ -223,12 +302,6 @@ private:
     void _UnloadInstancer(SdfPath const& instancerPath,
                           UsdImagingIndexProxy* index);
 
-    // Computes per-frame instance indices.
-    typedef std::unordered_map<SdfPath, VtIntArray, SdfPath::Hash> _InstanceMap;
-    _InstanceMap _ComputeInstanceMap(SdfPath const& instancerPath,
-                                     _InstancerData const& instrData,
-                                     UsdTimeCode time) const;
-
     // Updates per-frame instancer visibility.
     void _UpdateInstancerVisibility(SdfPath const& instancerPath,
                                     _InstancerData const& instrData,
@@ -243,18 +316,29 @@ private:
     _ProtoPrim const& _GetProtoPrim(SdfPath const& instancerPath, 
                                     SdfPath const& cachePath) const;
 
+    // Gets the associated _ProtoPrim and instancerContext if cachePath is a 
+    // child path and returns \c true, otherwise returns \c false.
+    //
+    // Note that the returned instancer context may not be as fully featured as
+    // your needs may be.
+    bool _GetProtoPrimForChild(
+            UsdPrim const& usdPrim,
+            SdfPath const& cachePath,
+            _ProtoPrim const** proto,
+            UsdImagingInstancerContext* ctx) const;
+
     // Gets the UsdPrim to use from the given _ProtoPrim.
     const UsdPrim _GetProtoUsdPrim(_ProtoPrim const& proto) const;
 
-    // Takes the transform in the value cache (this must exist before calling
-    // this method) and applies a corrective transform to 1) remove any
+    // Takes the transform applies a corrective transform to 1) remove any
     // transforms above the model root (root proto path) and 2) apply the 
     // instancer transform.
-    void _CorrectTransform(UsdPrim const& instancer,
-                           UsdPrim const& proto,
-                           SdfPath const& cachePath,
-                           SdfPathVector const& protoPathChain,
-                           UsdTimeCode time) const;
+    GfMatrix4d _CorrectTransform(UsdPrim const& instancer,
+                                 UsdPrim const& proto,
+                                 SdfPath const& cachePath,
+                                 SdfPathVector const& protoPathChain,
+                                 GfMatrix4d const& inTransform,
+                                 UsdTimeCode time) const;
 
     // Similar to CorrectTransform, requires a visibility value exist in the
     // ValueCache, removes any visibility opinions above the model root (proto
@@ -314,6 +398,10 @@ private:
         SdfPath parentInstancerCachePath;
         _ProtoPrimMap protoPrimMap;
         SdfPathVector prototypePaths;
+
+        using PathToIndexMap = TfDenseHashMap<SdfPath, size_t, SdfPath::Hash>;
+        PathToIndexMap prototypePathIndices;
+
 
         // XXX: We keep a bunch of state around visibility that's set in
         // TrackVariability and UpdateForTime.  "visible", and "visibleTime"

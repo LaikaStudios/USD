@@ -27,24 +27,34 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/hdSt/api.h"
 #include "pxr/imaging/hd/version.h"
+#include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hdSt/shaderCode.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
-#include "pxr/imaging/hdSt/shaderKey.h"
 #include "pxr/usd/sdf/path.h"
-#include "pxr/imaging/garch/gl.h"
+#include "pxr/imaging/garch/glApi.h"
 #include "pxr/imaging/hio/glslfx.h"
 
-#include <boost/scoped_ptr.hpp>
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-
-typedef boost::shared_ptr<class HdSt_GeometricShader>
-                                        HdSt_GeometricShaderSharedPtr;
+using HdSt_GeometricShaderSharedPtr =
+    std::shared_ptr<class HdSt_GeometricShader>;
+struct HdSt_ShaderKey;
 
 /// \class HdSt_GeometricShader
 ///
-/// A geometric shader -- Storm internal use
+/// Storm breaks down the concept of a shader program into distinct
+/// conceptual pieces that are then stitched together during code generation.
+/// The pieces are:
+/// (i)   geometric shader
+/// (ii)  material shader 
+/// (iii) lighting shader
+/// (iv)  render pass shader
+///
+/// The geometric shader contains the entry points for the relevant shader
+/// stages and uses geometry opinions (such as cullstyle, double sided, etc)
+/// to generate shader code variants via mixins.
 ///
 class HdSt_GeometricShader : public HdStShaderCode {
 public:
@@ -106,34 +116,37 @@ public:
     HdSt_GeometricShader(std::string const &glslfxString,
                        PrimitiveType primType,
                        HdCullStyle cullStyle,
+                       bool useHardwareFaceCulling,
+                       bool hasMirroredTransform,
+                       bool doubleSided,
                        HdPolygonMode polygonMode,
                        bool cullingPass,
                        SdfPath const &debugId = SdfPath(),
                        float lineWidth = 0);
 
     HDST_API
-    virtual ~HdSt_GeometricShader();
+    ~HdSt_GeometricShader() override;
 
     // HdShader overrides
     HDST_API
-    virtual ID ComputeHash() const;
+    ID ComputeHash() const override;
     HDST_API
-    virtual std::string GetSource(TfToken const &shaderStageKey) const;
+    std::string GetSource(TfToken const &shaderStageKey) const override;
     HDST_API
-    virtual void BindResources(int program,
+    void BindResources(int program,
                                HdSt_ResourceBinder const &binder,
                                HdRenderPassState const &state) override;
     
     HDST_API
-    virtual void UnbindResources(int program,
+    void UnbindResources(int program,
                                  HdSt_ResourceBinder const &binder,
                                  HdRenderPassState const &state) override;
     HDST_API
-    virtual void AddBindings(HdBindingRequestVector *customBindings);
+    void AddBindings(HdBindingRequestVector *customBindings) override;
 
     /// Returns true if this geometric shader is used for GPU frustum culling.
-    bool IsCullingPass() const {
-        return _cullingPass;
+    bool IsFrustumCullingPass() const {
+        return _frustumCullingPass;
     }
 
     PrimitiveType GetPrimitiveType() const {
@@ -179,45 +192,27 @@ public:
     HDST_API
     int GetNumPrimitiveVertsForGeometryShader() const;
 
-    /// template factory for convenience
-    template <typename KEY>
+    // Factory for convenience.
     static HdSt_GeometricShaderSharedPtr Create(
-            KEY const &shaderKey, 
-            HdStResourceRegistrySharedPtr const &resourceRegistry) {
-
-        HdInstance<HdSt_GeometricShaderSharedPtr> geometricShaderInstance =
-            resourceRegistry->RegisterGeometricShader(
-                HdStShaderKey::ComputeHash(shaderKey));
-
-        if (geometricShaderInstance.IsFirstInstance()) {
-            geometricShaderInstance.SetValue(
-                HdSt_GeometricShaderSharedPtr(
-                    new HdSt_GeometricShader(
-                        HdStShaderKey::GetGLSLFXString(shaderKey),
-                        shaderKey.GetPrimitiveType(),
-                        shaderKey.GetCullStyle(),
-                        shaderKey.GetPolygonMode(),
-                        shaderKey.IsCullingPass(),
-                        SdfPath(),
-                        shaderKey.GetLineWidth())));
-        }
-        return geometricShaderInstance.GetValue();
-    }
+            HdSt_ShaderKey const &shaderKey, 
+            HdStResourceRegistrySharedPtr const &resourceRegistry);
 
 private:
     PrimitiveType _primType;
     HdCullStyle _cullStyle;
+    bool _useHardwareFaceCulling;
+    bool _hasMirroredTransform;
+    bool _doubleSided;
     HdPolygonMode _polygonMode;
     float _lineWidth;
-    // depth offset?
 
-    boost::scoped_ptr<HioGlslfx> _glslfx;
-    bool _cullingPass;
+    std::unique_ptr<HioGlslfx> _glslfx;
+    bool _frustumCullingPass;
     ID _hash;
 
     // No copying
-    HdSt_GeometricShader(const HdSt_GeometricShader &)                     = delete;
-    HdSt_GeometricShader &operator =(const HdSt_GeometricShader &)         = delete;
+    HdSt_GeometricShader(const HdSt_GeometricShader &) = delete;
+    HdSt_GeometricShader &operator =(const HdSt_GeometricShader &) = delete;
 };
 
 

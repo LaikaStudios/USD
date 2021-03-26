@@ -25,7 +25,6 @@
 #include "pxr/imaging/hdSt/renderDelegate.h"
 
 #include "pxr/imaging/hdSt/basisCurves.h"
-#include "pxr/imaging/hd/camera.h"
 #include "pxr/imaging/hdSt/drawTarget.h"
 #include "pxr/imaging/hdSt/extComputation.h"
 #include "pxr/imaging/hdSt/field.h"
@@ -39,13 +38,20 @@
 #include "pxr/imaging/hdSt/renderBuffer.h"
 #include "pxr/imaging/hdSt/renderPass.h"
 #include "pxr/imaging/hdSt/renderPassState.h"
-#include "pxr/imaging/hdSt/texture.h"
+#include "pxr/imaging/hdSt/renderParam.h"
 #include "pxr/imaging/hdSt/tokens.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
 #include "pxr/imaging/hdSt/volume.h"
 
+#include "pxr/imaging/hd/aov.h"
+#include "pxr/imaging/hd/camera.h"
+#include "pxr/imaging/hd/driver.h"
 #include "pxr/imaging/hd/extComputation.h"
 #include "pxr/imaging/hd/perfLog.h"
+#include "pxr/imaging/hd/tokens.h"
+
+#include "pxr/imaging/hgi/hgi.h"
+#include "pxr/imaging/hgi/tokens.h"
 
 #include "pxr/imaging/glf/contextCaps.h"
 #include "pxr/imaging/glf/diagnostic.h"
@@ -60,13 +66,6 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_ENV_SETTING(HD_ENABLE_GPU_TINY_PRIM_CULLING, false,
                       "Enable tiny prim culling");
-
-// This token is repeated from usdVolImaging which we cannot access from here.
-// Should we even instantiate bprims of different types for OpenVDB vs Field3d?
-TF_DEFINE_PRIVATE_TOKENS(
-    _tokens,
-    (openvdbAsset)
-);
 
 const TfTokenVector HdStRenderDelegate::SUPPORTED_RPRIM_TYPES =
 {
@@ -88,41 +87,89 @@ const TfTokenVector HdStRenderDelegate::SUPPORTED_SPRIM_TYPES =
     HdPrimTypeTokens->sphereLight
 };
 
-const TfTokenVector HdStRenderDelegate::SUPPORTED_BPRIM_TYPES =
+using HdStResourceRegistryWeakPtr =  std::weak_ptr<HdStResourceRegistry>;
+
+namespace {
+
+//
+// Map from Hgi instances to resource registries.
+//
+// An entry is kept alive until the last shared_ptr to a resource
+// registry is dropped.
+//
+class _HgiToResourceRegistryMap final
 {
-    HdPrimTypeTokens->texture,
-    _tokens->openvdbAsset,
-    HdPrimTypeTokens->renderBuffer
+public:
+    // Map is a singleton.
+    static _HgiToResourceRegistryMap &GetInstance()
+    {
+        static _HgiToResourceRegistryMap instance;
+        return instance;
+    }
+
+    // Look-up resource registry by Hgi instance, create resource
+    // registry for the instance if it didn't exist.
+    HdStResourceRegistrySharedPtr GetOrCreateRegistry(Hgi * const hgi)
+    {
+        std::lock_guard<std::mutex> guard(_mutex);
+
+        // Previous entry exists, use it.
+        auto it = _map.find(hgi);
+        if (it != _map.end()) {
+            HdStResourceRegistryWeakPtr const &registry = it->second;
+            return HdStResourceRegistrySharedPtr(registry);
+        }
+
+        // Create resource registry, custom deleter to remove corresponding
+        // entry from map.
+        HdStResourceRegistrySharedPtr const result(
+            new HdStResourceRegistry(hgi),
+            [this](HdStResourceRegistry *registry) {
+                this->_Destroy(registry); });
+
+        // Insert into map.
+        _map.insert({hgi, result});
+
+        // Also register with HdPerfLog.
+        //
+        HdPerfLog::GetInstance().AddResourceRegistry(result.get());
+
+        return result;
+    }
+
+private:
+    void _Destroy(HdStResourceRegistry * const registry)
+    {
+        TRACE_FUNCTION();
+
+        std::lock_guard<std::mutex> guard(_mutex);
+
+        HdPerfLog::GetInstance().RemoveResourceRegistry(registry);
+        
+        _map.erase(registry->GetHgi());
+        delete registry;
+    }
+
+    using _Map = std::unordered_map<Hgi*, HdStResourceRegistryWeakPtr>;
+
+    _HgiToResourceRegistryMap() = default;
+
+    std::mutex _mutex;
+    _Map _map;
 };
 
-std::mutex HdStRenderDelegate::_mutexResourceRegistry;
-std::atomic_int HdStRenderDelegate::_counterResourceRegistry;
-HdStResourceRegistrySharedPtr HdStRenderDelegate::_resourceRegistry;
+}
 
 HdStRenderDelegate::HdStRenderDelegate()
+    : HdStRenderDelegate(HdRenderSettingsMap())
 {
-    _Initialize();
 }
 
 HdStRenderDelegate::HdStRenderDelegate(HdRenderSettingsMap const& settingsMap)
     : HdRenderDelegate(settingsMap)
+    , _hgi(nullptr)
+    , _renderParam(std::make_unique<HdStRenderParam>())
 {
-    _Initialize();
-}
-
-void
-HdStRenderDelegate::_Initialize()
-{
-    // Initialize one resource registry for all St plugins
-    // It will also add the resource to the logging object so we
-    // can query the resources used by all St plugins later
-    std::lock_guard<std::mutex> guard(_mutexResourceRegistry);
-    
-    if (_counterResourceRegistry.fetch_add(1) == 0) {
-        _resourceRegistry.reset( new HdStResourceRegistry() );
-        HdPerfLog::GetInstance().AddResourceRegistry(_resourceRegistry);
-    }
-
     // Initialize the settings and settings descriptors.
     _settingDescriptors = {
         HdRenderSettingDescriptor{
@@ -136,7 +183,12 @@ HdStRenderDelegate::_Initialize()
         HdRenderSettingDescriptor{
             "Step size when raymarching volume for lighting computation",
             HdStRenderSettingsTokens->volumeRaymarchingStepSizeLighting,
-            VtValue(HdStVolume::defaultStepSizeLighting) }
+            VtValue(HdStVolume::defaultStepSizeLighting) },
+        HdRenderSettingDescriptor{
+            "Maximum memory for a volume field texture in Mb "
+            "(unless overridden by field prim)",
+            HdStRenderSettingsTokens->volumeMaxTextureMemoryPerField,
+            VtValue(HdStVolume::defaultMaxTextureMemoryPerField) }
     };
 
     _PopulateDefaultSettings(_settingDescriptors);
@@ -168,11 +220,29 @@ HdStRenderDelegate::GetRenderStats() const
     return ra;
 }
 
-HdStRenderDelegate::~HdStRenderDelegate()
+HdStRenderDelegate::~HdStRenderDelegate() = default;
+
+void
+HdStRenderDelegate::SetDrivers(HdDriverVector const& drivers)
 {
-    // Here we could destroy the resource registry when the last render
-    // delegate HdSt is destroyed, however we prefer to keep the resources
-    // around to match previous singleton behaviour (for now).
+    if (_resourceRegistry) {
+        TF_CODING_ERROR("Cannot set HdDriver twice for a render delegate.");
+        return;
+    }
+
+    // For Storm we want to use the Hgi driver, so extract it.
+    for (HdDriver* hdDriver : drivers) {
+        if (hdDriver->name == HgiTokens->renderDriver &&
+            hdDriver->driver.IsHolding<Hgi*>()) {
+            _hgi = hdDriver->driver.UncheckedGet<Hgi*>();
+            break;
+        }
+    }
+    
+    _resourceRegistry =
+        _HgiToResourceRegistryMap::GetInstance().GetOrCreateRegistry(_hgi);
+
+    TF_VERIFY(_hgi, "HdSt requires Hgi HdDriver");
 }
 
 const TfTokenVector &
@@ -187,16 +257,31 @@ HdStRenderDelegate::GetSupportedSprimTypes() const
     return SUPPORTED_SPRIM_TYPES;
 }
 
+static
+TfTokenVector
+_ComputeSupportedBprimTypes()
+{
+    TfTokenVector result;
+    result.push_back(HdPrimTypeTokens->renderBuffer);
+
+    for (const TfToken &primType : HdStField::GetSupportedBprimTypes()) {
+        result.push_back(primType);
+    }
+
+    return result;
+}
+
 const TfTokenVector &
 HdStRenderDelegate::GetSupportedBprimTypes() const
 {
-    return SUPPORTED_BPRIM_TYPES;
+    static const TfTokenVector result = _ComputeSupportedBprimTypes();
+    return result;
 }
 
 HdRenderParam *
 HdStRenderDelegate::GetRenderParam() const
 {
-    return nullptr;
+    return _renderParam.get();
 }
 
 HdResourceRegistrySharedPtr
@@ -211,11 +296,9 @@ HdStRenderDelegate::GetDefaultAovDescriptor(TfToken const& name) const
     const bool colorDepthMSAA = true; // GL requires color/depth to be matching.
 
     if (name == HdAovTokens->color) {
-        HdFormat colorFormat = 
-            GlfContextCaps::GetInstance().floatingPointBuffersEnabled ?
-            HdFormatFloat16Vec4 : HdFormatUNorm8Vec4;
+        HdFormat colorFormat = HdFormatFloat16Vec4;
         return HdAovDescriptor(colorFormat,colorDepthMSAA, VtValue(GfVec4f(0)));
-    } else if (name == HdAovTokens->depth) {
+    } else if (HdAovHasDepthSemantic(name)) {
         return HdAovDescriptor(HdFormatFloat32, colorDepthMSAA, VtValue(1.0f));
     }
 
@@ -232,15 +315,14 @@ HdStRenderDelegate::CreateRenderPass(HdRenderIndex *index,
 HdRenderPassStateSharedPtr
 HdStRenderDelegate::CreateRenderPassState() const
 {
-    return boost::make_shared<HdStRenderPassState>();
+    return std::make_shared<HdStRenderPassState>();
 }
 
 HdInstancer *
 HdStRenderDelegate::CreateInstancer(HdSceneDelegate *delegate,
-                                    SdfPath const& id,
-                                    SdfPath const& instancerId)
+                                    SdfPath const& id)
 {
-    return new HdStInstancer(delegate, id, instancerId);
+    return new HdStInstancer(delegate, id);
 }
 
 void
@@ -251,17 +333,16 @@ HdStRenderDelegate::DestroyInstancer(HdInstancer *instancer)
 
 HdRprim *
 HdStRenderDelegate::CreateRprim(TfToken const& typeId,
-                                    SdfPath const& rprimId,
-                                    SdfPath const& instancerId)
+                                SdfPath const& rprimId)
 {
     if (typeId == HdPrimTypeTokens->mesh) {
-        return new HdStMesh(rprimId, instancerId);
+        return new HdStMesh(rprimId);
     } else if (typeId == HdPrimTypeTokens->basisCurves) {
-        return new HdStBasisCurves(rprimId, instancerId);
+        return new HdStBasisCurves(rprimId);
     } else  if (typeId == HdPrimTypeTokens->points) {
-        return new HdStPoints(rprimId, instancerId);
+        return new HdStPoints(rprimId);
     } else  if (typeId == HdPrimTypeTokens->volume) {
-        return new HdStVolume(rprimId, instancerId);
+        return new HdStVolume(rprimId);
     } else {
         TF_CODING_ERROR("Unknown Rprim Type %s", typeId.GetText());
     }
@@ -277,7 +358,7 @@ HdStRenderDelegate::DestroyRprim(HdRprim *rPrim)
 
 HdSprim *
 HdStRenderDelegate::CreateSprim(TfToken const& typeId,
-                                    SdfPath const& sprimId)
+                                SdfPath const& sprimId)
 {
     if (typeId == HdPrimTypeTokens->camera) {
         return new HdCamera(sprimId);
@@ -332,12 +413,10 @@ HdBprim *
 HdStRenderDelegate::CreateBprim(TfToken const& typeId,
                                 SdfPath const& bprimId)
 {
-    if (typeId == HdPrimTypeTokens->texture) {
-        return new HdStTexture(bprimId);
-    } else if (typeId == _tokens->openvdbAsset) {
+    if (HdStField::IsSupportedBprimType(typeId)) {
         return new HdStField(bprimId, typeId);
     } else if (typeId == HdPrimTypeTokens->renderBuffer) {
-        return new HdStRenderBuffer(&_hgiGL, bprimId);
+        return new HdStRenderBuffer(_resourceRegistry.get(), bprimId);
     } else {
         TF_CODING_ERROR("Unknown Bprim Type %s", typeId.GetText());
     }
@@ -348,12 +427,11 @@ HdStRenderDelegate::CreateBprim(TfToken const& typeId,
 HdBprim *
 HdStRenderDelegate::CreateFallbackBprim(TfToken const& typeId)
 {
-    if (typeId == HdPrimTypeTokens->texture) {
-        return new HdStTexture(SdfPath::EmptyPath());
-    } else if (typeId == _tokens->openvdbAsset) {
+    if (HdStField::IsSupportedBprimType(typeId)) {
         return new HdStField(SdfPath::EmptyPath(), typeId);
     } else if (typeId == HdPrimTypeTokens->renderBuffer) {
-        return new HdStRenderBuffer(&_hgiGL, SdfPath::EmptyPath());
+        return new HdStRenderBuffer(_resourceRegistry.get(),
+                                    SdfPath::EmptyPath());
     } else {
         TF_CODING_ERROR("Unknown Bprim Type %s", typeId.GetText());
     }
@@ -384,8 +462,11 @@ HdStRenderDelegate::_CreateFallbackMaterialPrim()
 void
 HdStRenderDelegate::CommitResources(HdChangeTracker *tracker)
 {
+    TF_UNUSED(tracker);
     GLF_GROUP_FUNCTION();
     
+    _ApplyTextureSettings();
+
     // --------------------------------------------------------------------- //
     // RESOLVE, COMPUTE & COMMIT PHASE
     // --------------------------------------------------------------------- //
@@ -398,9 +479,10 @@ HdStRenderDelegate::CommitResources(HdChangeTracker *tracker)
     // Commit all pending source data.
     _resourceRegistry->Commit();
 
-    if (tracker->IsGarbageCollectionNeeded()) {
+    HdStRenderParam *stRenderParam = _renderParam.get();
+    if (stRenderParam->IsGarbageCollectionNeeded()) {
         _resourceRegistry->GarbageCollect();
-        tracker->ClearGarbageCollectionNeeded();
+        stRenderParam->ClearGarbageCollectionNeeded();
     }
 
     // see bug126621. currently dispatch buffers need to be released
@@ -420,12 +502,6 @@ HdStRenderDelegate::GetShaderSourceTypes() const
     return {HioGlslfxTokens->glslfx};
 }
 
-bool
-HdStRenderDelegate::IsPrimvarFilteringNeeded() const
-{
-    return true;
-}
-
 TfToken 
 HdStRenderDelegate::GetMaterialNetworkSelector() const
 {
@@ -435,7 +511,20 @@ HdStRenderDelegate::GetMaterialNetworkSelector() const
 Hgi*
 HdStRenderDelegate::GetHgi()
 {
-    return &_hgiGL;
+    return _hgi;
+}
+
+void
+HdStRenderDelegate::_ApplyTextureSettings()
+{
+    const float memInMb =
+        std::max(0.0f,
+                 GetRenderSetting<float>(
+                     HdStRenderSettingsTokens->volumeMaxTextureMemoryPerField,
+                     HdStVolume::defaultMaxTextureMemoryPerField));
+
+    _resourceRegistry->SetMemoryRequestForTextureType(
+        HdTextureType::Field, 1048576 * memInMb);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

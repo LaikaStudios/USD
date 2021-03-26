@@ -31,11 +31,9 @@
 #include "pxr/imaging/hd/aov.h"
 #include "pxr/imaging/hd/basisCurvesTopology.h"
 #include "pxr/imaging/hd/enums.h"
-#include "pxr/imaging/hd/materialParam.h"
 #include "pxr/imaging/hd/meshTopology.h"
 #include "pxr/imaging/hd/renderIndex.h"
 #include "pxr/imaging/hd/repr.h"
-#include "pxr/imaging/hd/textureResource.h"
 #include "pxr/imaging/hd/timeSampleArray.h"
 
 #include "pxr/imaging/pxOsd/subdivTags.h"
@@ -48,7 +46,7 @@
 #include "pxr/base/gf/vec2i.h"
 #include "pxr/base/tf/hash.h"
 
-#include <boost/shared_ptr.hpp>
+#include <memory>
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -57,6 +55,9 @@ class HdExtComputationContext;
 
 /// A shared pointer to a vector of id's.
 typedef std::shared_ptr<SdfPathVector> HdIdVectorSharedPtr;
+
+/// Instancer context: a pair of instancer paths and instance indices.
+typedef std::vector<std::pair<SdfPath, int>> HdInstancerContext;
 
 /// \class HdSyncRequestVector
 ///
@@ -85,6 +86,10 @@ struct HdDisplayStyle {
     
     /// Is the prim displacement shaded.
     bool displacementEnabled;
+
+    /// Does the prim act "transparent" to allow occluded selection to show
+    /// through?
+    bool occludedSelectionShowsThrough;
     
     /// Creates a default DisplayStyle.
     /// - refineLevel is 0.
@@ -94,6 +99,7 @@ struct HdDisplayStyle {
         : refineLevel(0)
         , flatShadingEnabled(false)
         , displacementEnabled(true)
+        , occludedSelectionShowsThrough(false)
     { }
     
     /// Creates a DisplayStyle.
@@ -101,12 +107,16 @@ struct HdDisplayStyle {
     ///        Valid range is [0, 8].
     /// \param flatShading enables flat shading, defaults to false.
     /// \param displacement enables displacement shading, defaults to false.
+    /// \param occludedSelectionShowsThrough controls whether the prim lets
+    ///        occluded selection show through it, defaults to false.
     HdDisplayStyle(int refineLevel_,
                    bool flatShading = false,
-                   bool displacement = true)
+                   bool displacement = true,
+                   bool occludedSelectionShowsThrough_ = false)
         : refineLevel(std::max(0, refineLevel_))
         , flatShadingEnabled(flatShading)
         , displacementEnabled(displacement)
+        , occludedSelectionShowsThrough(occludedSelectionShowsThrough_)
     {
         if (refineLevel_ < 0) {
             TF_CODING_ERROR("negative refine level is not supported");
@@ -121,7 +131,9 @@ struct HdDisplayStyle {
     bool operator==(HdDisplayStyle const& rhs) const {
         return refineLevel == rhs.refineLevel
             && flatShadingEnabled == rhs.flatShadingEnabled
-            && displacementEnabled == rhs.displacementEnabled;
+            && displacementEnabled == rhs.displacementEnabled
+            && occludedSelectionShowsThrough ==
+                rhs.occludedSelectionShowsThrough;
     }
     bool operator!=(HdDisplayStyle const& rhs) const {
         return !(*this == rhs);
@@ -570,71 +582,28 @@ public:
     HD_API
     virtual GfMatrix4d GetInstancerTransform(SdfPath const &instancerId);
 
-
-    /// Resolves a \p protoRprimId and \p protoIndex back to original
-    /// instancer path by backtracking nested instancer hierarchy.
-    ///
-    /// It will be an empty path if the given protoRprimId is not
-    /// instanced.
-    ///
-    /// (Note: see usdImaging/delegate.h for details specific to USD
-    /// instancing)
-    ///
-    /// If the instancer instances heterogeneously, the instance index of the
-    /// prototype rprim doesn't match the instance index in the instancer.
-    ///
-    /// For example, if we have:
-    ///
-    ///     instancer {
-    ///         prototypes = [ A, B, A, B, B ]
-    ///     }
-    ///
-    /// ...then the indices would be:
-    ///
-    ///        protoIndex          instancerIndex
-    ///     A: [0, 1]              [0, 2]
-    ///     B: [0, 1, 2]           [1, 3, 5]
-    ///
-    /// To track this mapping, the \p instancerIndex is returned which
-    /// corresponds to the given protoIndex.
-    ///
-    /// Also, note if there are nested instancers, the returned path will
-    /// be the top-level instancer, and the \p instancerIndex will be for
-    /// that top-level instancer. This can lead to situations where, contrary
-    /// to the previous scenario, the instancerIndex has fewer possible values
-    /// than the \p protoIndex:
-    ///
-    /// For example, if we have:
-    ///
-    ///     instancerBottom {
-    ///         prototypes = [ A, A, B ]
-    ///     }
-    ///     instancerTop {
-    ///         prototypes = [ instancerBottom, instancerBottom ]
-    ///     }
-    ///
-    /// ...then the indices might be:
-    ///
-    ///        protoIndex          instancerIndex  (for instancerTop)
-    ///     A: [0, 1, 2, 3]        [0, 0, 1, 1]
-    ///     B: [0, 1]              [0, 1]
-    ///
-    /// because \p instancerIndex are indices for instancerTop, which only has
-    /// two possible indices.
-    ///
-    /// If \p masterCachePath is not NULL, then it may be set to the cache path
-    /// corresponding instance master prim, if there is one. Otherwise, it will
-    /// be set to null.
-    ///
-    /// If \p instanceContext is not NULL, it is populated with the list of
-    /// instance roots that must be traversed to get to the rprim. If this
-    /// list is non-empty, the last prim is always the forwarded rprim.
+    /// Returns the parent instancer of the given rprim or instancer.
     HD_API
-    virtual SdfPath GetPathForInstanceIndex(const SdfPath &protoRprimId,
-                                            int protoIndex,
-                                            int *instancerIndex,
-                                            SdfPath *masterCachePath=NULL,
-                                            SdfPathVector *instanceContext=NULL);
+    virtual SdfPath GetInstancerId(SdfPath const& primId);
+
+    /// Returns a list of prototypes of this instancer. The intent is to let
+    /// renderers cache instance indices by giving them a complete set of prims
+    /// to call GetInstanceIndices(instancer, prototype) on.
+    /// XXX: This is currently unused, but may be used in the future.
+    HD_API
+    virtual SdfPathVector GetInstancerPrototypes(SdfPath const& instancerId);
+
+    // -----------------------------------------------------------------------//
+    /// \name Path Translation
+    // -----------------------------------------------------------------------//
+
+    /// Returns the scene address of the prim corresponding to the given
+    /// rprim/instance index. This is designed to give paths in scene namespace,
+    /// rather than hydra namespace, so it always strips the delegate ID.
+    HD_API
+    virtual SdfPath GetScenePrimPath(SdfPath const& rprimId,
+                                     int instanceIndex,
+                                     HdInstancerContext *instancerContext = nullptr);
 
     // -----------------------------------------------------------------------//
     /// \name Material Aspects
@@ -648,18 +617,6 @@ public:
     // needed to create a material.
     HD_API 
     virtual VtValue GetMaterialResource(SdfPath const &materialId);
-
-    // -----------------------------------------------------------------------//
-    /// \name Texture Aspects
-    // -----------------------------------------------------------------------//
-
-    /// Returns the texture resource ID for a given texture ID.
-    HD_API
-    virtual HdTextureResource::ID GetTextureResourceID(SdfPath const& textureId);
-
-    /// Returns the texture resource for a given texture ID.
-    HD_API
-    virtual HdTextureResourceSharedPtr GetTextureResource(SdfPath const& textureId);
 
     // -----------------------------------------------------------------------//
     /// \name Renderbuffer Aspects
@@ -746,6 +703,44 @@ public:
     HD_API
     virtual VtValue GetExtComputationInput(SdfPath const& computationId,
                                            TfToken const& input);
+
+    /// Return up to \a maxSampleCount samples for a given computation id and
+    /// input token.
+    /// The token may be a computation input or a computation config parameter.
+    /// Returns the union of the authored samples and the boundaries
+    /// of the current camera shutter interval. If this number is greater
+    /// than maxSampleCount, you might want to call this function again
+    /// to get all the authored data.
+    HD_API
+    virtual size_t SampleExtComputationInput(SdfPath const& computationId,
+                                             TfToken const& input,
+                                             size_t maxSampleCount,
+                                             float *sampleTimes,
+                                             VtValue *sampleValues);
+
+    /// Convenience form of SampleExtComputationInput() that takes an
+    /// HdTimeSampleArray.
+    /// Returns the union of the authored samples and the boundaries
+    /// of the current camera shutter interval.
+    template <unsigned int CAPACITY>
+    void SampleExtComputationInput(SdfPath const& computationId,
+                                   TfToken const& input,
+                                   HdTimeSampleArray<VtValue, CAPACITY> *sa) {
+        size_t authoredSamples = SampleExtComputationInput(
+                computationId, input, CAPACITY,
+                sa->times.data(), sa->values.data());
+
+        if (authoredSamples > CAPACITY) {
+            sa->Resize(authoredSamples);
+            size_t authoredSamplesSecondAttempt = SampleExtComputationInput(
+                    computationId, input, authoredSamples,
+                    sa->times.data(), sa->values.data());
+            // Number of samples should be consisntent through multiple
+            // invokations of the sampling function.
+            TF_VERIFY(authoredSamples == authoredSamplesSecondAttempt);
+        }
+        sa->count = authoredSamples;
+    }
 
     /// Returns the kernel source assigned to the computation at the path id.
     /// If the string is empty the computation has no GPU kernel and the

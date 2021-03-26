@@ -35,10 +35,20 @@ PXR_NAMESPACE_OPEN_SCOPE
 ///
 /// Represents an OpenGL GPU buffer resource.
 ///
-class HgiGLBuffer final : public HgiBuffer {
+class HgiGLBuffer final : public HgiBuffer
+{
 public:
     HGIGL_API
-    virtual ~HgiGLBuffer();
+    ~HgiGLBuffer() override;
+
+    HGIGL_API
+    size_t GetByteSizeOfResource() const override;
+
+    HGIGL_API
+    uint64_t GetRawResource() const override;
+
+    HGIGL_API
+    void* GetCPUStagingAddress() override;
 
     uint32_t GetBufferId() const {return _bufferId;}
 
@@ -53,9 +63,9 @@ private:
     HgiGLBuffer & operator=(const HgiGLBuffer&) = delete;
     HgiGLBuffer(const HgiGLBuffer&) = delete;
 
-    HgiBufferDesc _descriptor;
     uint32_t _bufferId;
     void* _mapped;
+    void* _cpuStaging;
 };
 
 

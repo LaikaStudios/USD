@@ -33,7 +33,6 @@
 #include <vector>
 
 #include <boost/compressed_pair.hpp>
-#include <boost/operators.hpp>
 #include <boost/iterator/iterator_facade.hpp>
 #include <boost/utility.hpp>
 
@@ -57,10 +56,7 @@ template <
     class    EqualKey  = std::equal_to<Key>,
     unsigned Threshold = 128
 >
-class TfDenseHashMap :
-    private boost::equality_comparable<
-        TfDenseHashMap<Key, Data, HashFn, EqualKey, Threshold>
-    >
+class TfDenseHashMap
 {
 public:
 
@@ -246,16 +242,28 @@ public:
     ///
     TfDenseHashMap(const TfDenseHashMap &rhs)
     :   _vectorHashFnEqualFn(rhs._vectorHashFnEqualFn) {
-        if (rhs._h)
+        if (rhs._h) {
             _h.reset(new _HashMap(*rhs._h));
+        }
     }
 
-    /// Assignment operator.
+    /// Move Ctor.
     ///
-    TfDenseHashMap &operator=(TfDenseHashMap rhs) {
-        swap(rhs);
+    TfDenseHashMap(TfDenseHashMap &&rhs) = default;
+
+    /// Copy assignment operator.
+    ///
+    TfDenseHashMap &operator=(const TfDenseHashMap &rhs) {
+        if (this != &rhs) {
+            TfDenseHashMap temp(rhs);
+            temp.swap(*this);
+        }
         return *this;
     }
+
+    /// Move assignment operator.
+    ///
+    TfDenseHashMap &operator=(TfDenseHashMap &&rhs) = default;
 
     /// Assignment from an initializer_list.
     ///
@@ -284,6 +292,10 @@ public:
         }
 
         return true;
+    }
+
+    bool operator!=(const TfDenseHashMap &rhs) const {
+        return !(*this == rhs);
     }
 
     /// Erases all of the elements
@@ -498,8 +510,7 @@ public:
     void shrink_to_fit() {
 
         // Shrink the vector to best size.
-        //XXX: When switching to c++0x we should call _vec().shrink_to_fit().
-        _Vector(_vec()).swap(_vec());
+        _vec().shrink_to_fit();
 
         if (!_h)
             return;

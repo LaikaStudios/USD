@@ -99,6 +99,7 @@ void wrapUsdGeomTokens()
     _AddToken(cls, "edgeOnly", UsdGeomTokens->edgeOnly);
     _AddToken(cls, "elementSize", UsdGeomTokens->elementSize);
     _AddToken(cls, "elementType", UsdGeomTokens->elementType);
+    _AddToken(cls, "exposure", UsdGeomTokens->exposure);
     _AddToken(cls, "extent", UsdGeomTokens->extent);
     _AddToken(cls, "extentsHint", UsdGeomTokens->extentsHint);
     _AddToken(cls, "face", UsdGeomTokens->face);
@@ -182,6 +183,7 @@ void wrapUsdGeomTokens()
     _AddToken(cls, "smooth", UsdGeomTokens->smooth);
     _AddToken(cls, "stereoRole", UsdGeomTokens->stereoRole);
     _AddToken(cls, "subdivisionScheme", UsdGeomTokens->subdivisionScheme);
+    _AddToken(cls, "tangents", UsdGeomTokens->tangents);
     _AddToken(cls, "triangleSubdivisionRule", UsdGeomTokens->triangleSubdivisionRule);
     _AddToken(cls, "trimCurveCounts", UsdGeomTokens->trimCurveCounts);
     _AddToken(cls, "trimCurveKnots", UsdGeomTokens->trimCurveKnots);

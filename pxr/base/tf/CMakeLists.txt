@@ -75,7 +75,6 @@ pxr_library(tf
         templateString
         tf
         token
-        traits
         type
         typeFunctions
         typeNotice
@@ -98,6 +97,7 @@ pxr_library(tf
         pyFunction
         pyIdentity
         pyInterpreter
+        pyInvoke
         pyModule
         pyModuleNotice
         pyNoticeWrapper
@@ -111,7 +111,6 @@ pxr_library(tf
         pySingleton
         pyTracing
         pyUtils
-        pyWeakObject
         pyWrapContext
         scriptModuleLoader
         wrapTypeHelpers
@@ -138,6 +137,7 @@ pxr_library(tf
         type_Impl.h
 
     PYTHON_PUBLIC_HEADERS
+        py3Compat.h
         pySafePython.h
         pyStaticTokens.h
 
@@ -162,6 +162,7 @@ pxr_library(tf
         pxrDoubleConversion/fixed-dtoa.h
         pxrDoubleConversion/strtod.h
         pxrLZ4/lz4.h
+        pyWeakObject.h
 
     CPPFILES
         initConfig.cpp
@@ -181,6 +182,7 @@ pxr_library(tf
 
     PYMODULE_CPPFILES
         module.cpp
+        pyWeakObject.cpp
         wrapAnyWeakPtr.cpp
         wrapCallContext.cpp
         wrapDebug.cpp
@@ -227,6 +229,15 @@ pxr_library(tf
         testenv/testTfScriptModuleLoader_Other.py
         testenv/testTfScriptModuleLoader_Test.py
         testenv/testTfScriptModuleLoader_Unknown.py
+        testenv/testTfPyInvoke_callees.py
+
+    DOXYGEN_FILES
+        diagnosticOverview.dox
+        errorOverview.dox
+        mallocTagOverview.dox
+        noteOverview.dox
+        overview.dox
+        registryOverview.dox
 )
 
 if(PXR_ENABLE_PYTHON_SUPPORT)
@@ -243,6 +254,13 @@ if(PXR_ENABLE_PYTHON_SUPPORT)
             tf
         CPPFILES
             testenv/testTfPyInterpreter.cpp
+    )
+
+    pxr_build_test(testTfPyInvoke
+        LIBRARIES
+            tf
+        CPPFILES
+            testenv/testTfPyInvoke.cpp
     )
 
     pxr_build_test(testTfPyLock
@@ -377,10 +395,6 @@ pxr_install_test_dir(
     SRC testenv/baseline/TfDebugTestEnv
     DEST TfDebugTestEnv/baseline
 )
-pxr_install_test_dir(
-    SRC testenv/baseline/TfDebugTestEnvList
-    DEST TfDebugTestEnvList/baseline
-)
 endif()
 pxr_install_test_dir(
     SRC testenv/baseline/TfDelegate
@@ -430,10 +444,6 @@ pxr_register_test(TfDebugFatal_3
     COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDebugFatal_3"
     EXPECTED_RETURN_CODE 134
 )
-pxr_register_test(TfDebugFatal_4
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDebugFatal_4"
-    EXPECTED_RETURN_CODE 134
-)
 # These tests will depend on downstream libraries when built monolithic.
 # We don't want changes to those libraries to affect test results so we
 # simply disable these tests in that case.
@@ -443,12 +453,6 @@ pxr_register_test(TfDebugTestEnv
     ENV TF_DEBUG="FOO* FLAM_* FLAM -FOOFLIMFLAM TF_DISCOVERY_D*"
     STDOUT_REDIRECT debugTestEnv.out
     DIFF_COMPARE debugTestEnv.out
-)
-pxr_register_test(TfDebugTestEnvList
-    ENV TF_DEBUG=list
-    COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTf TfDebugTestEnvList"
-    STDOUT_REDIRECT debugTestEnvList.out
-    DIFF_COMPARE debugTestEnvList.out
 )
 endif()
 pxr_register_test(TfDebugTestEnvHelp
@@ -641,6 +645,10 @@ if(PXR_ENABLE_PYTHON_SUPPORT)
     )
     pxr_register_test(testTfPyInterpreter
         COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyInterpreter"
+    )
+    pxr_register_test(testTfPyInvoke
+        REQUIRES_PYTHON_MODULES
+        COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyInvoke"
     )
     pxr_register_test(testTfPyLock
         COMMAND "${CMAKE_INSTALL_PREFIX}/tests/testTfPyLock"

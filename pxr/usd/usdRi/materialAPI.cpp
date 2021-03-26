@@ -62,7 +62,12 @@ UsdRiMaterialAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
 
 
 /* virtual */
-UsdSchemaType UsdRiMaterialAPI::_GetSchemaType() const {
+UsdSchemaKind UsdRiMaterialAPI::_GetSchemaKind() const {
+    return UsdRiMaterialAPI::schemaKind;
+}
+
+/* virtual */
+UsdSchemaKind UsdRiMaterialAPI::_GetSchemaType() const {
     return UsdRiMaterialAPI::schemaType;
 }
 
@@ -70,8 +75,10 @@ UsdSchemaType UsdRiMaterialAPI::_GetSchemaType() const {
 UsdRiMaterialAPI
 UsdRiMaterialAPI::Apply(const UsdPrim &prim)
 {
-    return UsdAPISchemaBase::_ApplyAPISchema<UsdRiMaterialAPI>(
-            prim, _schemaTokens->RiMaterialAPI);
+    if (prim.ApplyAPI<UsdRiMaterialAPI>()) {
+        return UsdRiMaterialAPI(prim);
+    }
+    return UsdRiMaterialAPI();
 }
 
 /* static */
@@ -225,8 +232,8 @@ UsdShadeShader
 UsdRiMaterialAPI::_GetSourceShaderObject(const UsdShadeOutput &output,
                                          bool ignoreBaseMaterial) const
 {
-    // If output doesn't have a valid property, return an invalid shader.
-    if (!output.GetProperty()) {
+    // If output doesn't have a valid attribute, return an invalid shader.
+    if (!output.GetAttr()) {
         return UsdShadeShader();
     }
 
@@ -288,52 +295,19 @@ UsdRiMaterialAPI::GetVolume(bool ignoreBaseMaterial) const
 UsdShadeOutput 
 UsdRiMaterialAPI::GetSurfaceOutput() const
 {
-    const UsdShadeOutput op = UsdShadeMaterial(GetPrim()).GetSurfaceOutput(
-            _tokens->ri);
-    if (op) {
-        return op;
-    }
-
-    if (const UsdRelationship rel = GetPrim().GetRelationship(
-                _tokens->riLookSurface)) {
-        return UsdShadeOutput(rel);
-    }
-
-    return op;
+    return  UsdShadeMaterial(GetPrim()).GetSurfaceOutput(_tokens->ri);
 }
 
 UsdShadeOutput 
 UsdRiMaterialAPI::GetDisplacementOutput() const
 {
-    const UsdShadeOutput op = UsdShadeMaterial(GetPrim()).GetDisplacementOutput(
-            _tokens->ri);
-    if (op) {
-        return op;
-    }
-
-    if (const UsdRelationship rel = GetPrim().GetRelationship(
-                _tokens->riLookDisplacement)) {
-        return UsdShadeOutput(rel);
-    }
-
-    return op;
+    return UsdShadeMaterial(GetPrim()).GetDisplacementOutput(_tokens->ri);
 }
 
 UsdShadeOutput 
 UsdRiMaterialAPI::GetVolumeOutput() const
 {
-    const UsdShadeOutput op = UsdShadeMaterial(GetPrim()).GetVolumeOutput(
-            _tokens->ri);
-    if (op) {
-        return op;
-    }
-
-    if (const UsdRelationship rel = GetPrim().GetRelationship(
-                _tokens->riLookVolume)) {
-        return UsdShadeOutput(rel);
-    }
-
-    return op;
+    return UsdShadeMaterial(GetPrim()).GetVolumeOutput(_tokens->ri);
 }
 
 bool

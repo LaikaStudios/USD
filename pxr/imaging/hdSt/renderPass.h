@@ -29,12 +29,9 @@
 #include "pxr/imaging/hdSt/commandBuffer.h"
 #include "pxr/imaging/hd/renderPass.h"
 
-#include <boost/shared_ptr.hpp>
 #include <unordered_map>
 
 PXR_NAMESPACE_OPEN_SCOPE
-
-typedef boost::shared_ptr<class HdSt_RenderPass> HdSt_RenderPassSharedPtr;
 
 class Hgi;
 
@@ -70,7 +67,7 @@ private:
     void _PrepareCommandBuffer(TfTokenVector const& renderTags);
 
     // XXX: This should really be in HdSt_DrawBatch::PrepareDraw.
-    void _Cull(HdStRenderPassStateSharedPtr const &renderPasssState);
+    void _FrustumCullCPU(HdStRenderPassStateSharedPtr const &renderPasssState);
 
     // -----------------------------------------------------------------------
     // Drawing state
@@ -87,6 +84,9 @@ private:
 
     // The version number of the currently active render tags
     int _renderTagVersion;
+
+    // The version number of the material tags (of the rprims).
+    unsigned int _materialTagsVersion;
 
     // A flag indicating that the held collection changed since this renderPass
     // was last drawn.

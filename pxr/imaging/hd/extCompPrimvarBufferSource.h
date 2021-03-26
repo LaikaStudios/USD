@@ -30,12 +30,14 @@
 #include "pxr/imaging/hd/types.h"
 #include "pxr/base/tf/token.h"
 
+#include <memory>
+
 PXR_NAMESPACE_OPEN_SCOPE
 
 class HdExtCompCpuComputation;
 
-typedef boost::shared_ptr<HdExtCompCpuComputation>
-                                               HdExtCompCpuComputationSharedPtr;
+using HdExtCompCpuComputationSharedPtr = 
+    std::shared_ptr<HdExtCompCpuComputation>;
 
 /// Hd Buffer Source that binds a primvar to a Ext Computation output.
 /// This buffer source is compatible with being bound to a Bar.
@@ -91,6 +93,11 @@ protected:
     virtual bool _CheckValid() const override;
 
 private:
+    // TfHash support.
+    template <class HashState>
+    friend void TfHashAppend(HashState &h,
+                             HdExtCompPrimvarBufferSource const &);
+
     TfToken                          _primvarName;
     HdExtCompCpuComputationSharedPtr _source;
     size_t                           _sourceOutputIdx;

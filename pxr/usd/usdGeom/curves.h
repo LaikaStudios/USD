@@ -52,21 +52,38 @@ class SdfAssetPath;
 
 /// \class UsdGeomCurves
 ///
-/// Base class for BasisCurves and NurbsCurves.  The BasisCurves
-/// schema is designed to be analagous to offline renderers' notion
-/// of batched curves (such as the classical RIB definition via
-/// Basis and Curves statements), while the NurbsCurve schema
-/// is designed to be analgous to the NURBS curves found in packages
-/// like Maya and Houdini while retaining their consistency with the 
-/// RenderMan specification for NURBS Patches.
+/// Base class for UsdGeomBasisCurves, UsdGeomNurbsCurves, and
+/// UsdGeomHermiteCurves.  The BasisCurves schema is designed to be
+/// analagous to offline renderers' notion of batched curves (such as
+/// the classical RIB definition via Basis and Curves statements),
+/// while the NurbsCurve schema is designed to be analgous to the
+/// NURBS curves found in packages like Maya and Houdini while
+/// retaining their consistency with the RenderMan specification for
+/// NURBS Patches. HermiteCurves are useful for the
+/// interchange of animation guides and paths.
+/// 
+/// It is safe to use the length of the curve vertex count to derive
+/// the number of curves and the number and layout of curve vertices,
+/// but this schema should NOT be used to derive the number of curve
+/// points. While vertex indices are implicit in all shipped
+/// descendent types of this schema, one should not assume that all
+/// internal or future shipped schemas will follow this pattern. Be
+/// sure to key any indexing behavior off the concrete type, not this
+/// abstract type.
+/// 
 ///
 class UsdGeomCurves : public UsdGeomPointBased
 {
 public:
     /// Compile time constant representing what kind of schema this class is.
     ///
-    /// \sa UsdSchemaType
-    static const UsdSchemaType schemaType = UsdSchemaType::AbstractTyped;
+    /// \sa UsdSchemaKind
+    static const UsdSchemaKind schemaKind = UsdSchemaKind::AbstractTyped;
+
+    /// \deprecated
+    /// Same as schemaKind, provided to maintain temporary backward 
+    /// compatibility with older generated schemas.
+    static const UsdSchemaKind schemaType = UsdSchemaKind::AbstractTyped;
 
     /// Construct a UsdGeomCurves on UsdPrim \p prim .
     /// Equivalent to UsdGeomCurves::Get(prim.GetStage(), prim.GetPath())
@@ -111,11 +128,17 @@ public:
 
 
 protected:
-    /// Returns the type of schema this class belongs to.
+    /// Returns the kind of schema this class belongs to.
     ///
-    /// \sa UsdSchemaType
+    /// \sa UsdSchemaKind
     USDGEOM_API
-    UsdSchemaType _GetSchemaType() const override;
+    UsdSchemaKind _GetSchemaKind() const override;
+
+    /// \deprecated
+    /// Same as _GetSchemaKind, provided to maintain temporary backward 
+    /// compatibility with older generated schemas.
+    USDGEOM_API
+    UsdSchemaKind _GetSchemaType() const override;
 
 private:
     // needs to invoke _GetStaticTfType.
@@ -238,6 +261,14 @@ public:
     static bool ComputeExtent(const VtVec3fArray& points,
         const VtFloatArray& widths, const GfMatrix4d& transform,
         VtVec3fArray* extent);
+
+    /// Returns the number of curves as defined by the size of the
+    /// _curveVertexCounts_ array at _timeCode_.
+    ///
+    /// \snippetdoc snippets.dox GetCount
+    /// \sa GetCurveVertexCountsAttr()
+    USDGEOM_API
+    size_t GetCurveCount(UsdTimeCode timeCode = UsdTimeCode::Default()) const;
 };
 
 PXR_NAMESPACE_CLOSE_SCOPE

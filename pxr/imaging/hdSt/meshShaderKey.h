@@ -28,12 +28,13 @@
 #include "pxr/imaging/hd/version.h"
 #include "pxr/imaging/hd/enums.h"
 #include "pxr/imaging/hdSt/geometricShader.h"
+#include "pxr/imaging/hdSt/shaderKey.h"
 #include "pxr/base/tf/token.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
-struct HdSt_MeshShaderKey
+struct HdSt_MeshShaderKey : public HdSt_ShaderKey
 {
     enum NormalSource
     {
@@ -51,13 +52,14 @@ struct HdSt_MeshShaderKey
                        HdInterpolation normalsInterpolation,
                        bool doubleSided,
                        bool forceGeometryShader,
+                       bool hasTopologicalVisibility,
                        bool blendWireframeColor,
                        HdCullStyle cullStyle,
                        HdMeshGeomStyle geomStyle,
                        float lineWidth,
-                       bool enableScalarOverride,
-                       bool discardIfNotActiveSelected = false,
-                       bool discardIfNotRolloverSelected = false);
+                       bool hasMirroredTransform,
+                       bool hasInstancer,
+                       bool enableScalarOverride);
 
     // Note: it looks like gcc 4.8 has a problem issuing
     // a wrong warning as "array subscript is above array bounds"
@@ -66,32 +68,44 @@ struct HdSt_MeshShaderKey
     // avoids the issue.
     ~HdSt_MeshShaderKey();
 
-    bool IsCullingPass() const { return false; }
-    HdCullStyle GetCullStyle() const { return cullStyle; }
-    HdPolygonMode GetPolygonMode() const { return polygonMode; }
-    float GetLineWidth() const { return lineWidth; }
-    HdSt_GeometricShader::PrimitiveType GetPrimitiveType() const {
+    HdCullStyle GetCullStyle() const override { return cullStyle; }
+    bool UseHardwareFaceCulling() const override {
+        return useHardwareFaceCulling;
+    }
+    bool HasMirroredTransform() const override {
+        return hasMirroredTransform;
+    }
+    bool IsDoubleSided() const override {
+        return doubleSided;
+    }
+
+    HdPolygonMode GetPolygonMode() const override { return polygonMode; }
+    float GetLineWidth() const override { return lineWidth; }
+    HdSt_GeometricShader::PrimitiveType GetPrimitiveType() const override {
         return primType; 
     }
 
     HdSt_GeometricShader::PrimitiveType primType;
     HdCullStyle cullStyle;
+    bool useHardwareFaceCulling;
+    bool hasMirroredTransform;
+    bool doubleSided;
     HdPolygonMode polygonMode;
     float lineWidth;
 
-    TfToken const &GetGlslfxFile() const { return glslfx; }
-    TfToken const *GetVS() const  { return VS; }
-    TfToken const *GetTCS() const { return TCS; }
-    TfToken const *GetTES() const { return TES; }
-    TfToken const *GetGS() const  { return GS; }
-    TfToken const *GetFS() const  { return FS; }
+    TfToken const &GetGlslfxFilename() const override { return glslfx; }
+    TfToken const *GetVS()  const override { return VS; }
+    TfToken const *GetTCS() const override { return TCS; }
+    TfToken const *GetTES() const override { return TES; }
+    TfToken const *GetGS()  const override { return GS; }
+    TfToken const *GetFS()  const override { return FS; }
 
     TfToken glslfx;
     TfToken VS[7];
     TfToken TCS[3];
-    TfToken TES[3];
-    TfToken GS[8];
-    TfToken FS[17];
+    TfToken TES[4];
+    TfToken GS[11];
+    TfToken FS[15];
 };
 
 

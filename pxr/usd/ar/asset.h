@@ -45,10 +45,8 @@ public:
     AR_API
     virtual ~ArAsset();
 
-    AR_API 
     ArAsset(const ArAsset&) = delete;
 
-    AR_API 
     ArAsset& operator=(const ArAsset&) = delete;
 
     /// Returns size of the asset.
@@ -68,6 +66,9 @@ public:
 
     /// Read \p count bytes at \p offset from the beginning of the asset
     /// into \p buffer. Returns number of bytes read, or 0 on error.
+    ///
+    /// Implementers should range-check calls and return zero for out-of-bounds
+    /// reads.
     AR_API
     virtual size_t Read(void* buffer, size_t count, size_t offset) = 0;
         

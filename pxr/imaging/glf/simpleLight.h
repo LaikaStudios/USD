@@ -32,6 +32,13 @@
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
 #include "pxr/usd/sdf/path.h"
+#include "pxr/usd/sdf/assetPath.h"
+
+#include "pxr/base/tf/token.h"
+#include "pxr/base/vt/array.h"
+#include "pxr/base/vt/dictionary.h"
+
+#include <string>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -89,9 +96,9 @@ public:
     void SetAttenuation(GfVec3f const & attenuation);
 
     GLF_API
-    GfMatrix4d const & GetShadowMatrix() const;
+    std::vector<GfMatrix4d> const & GetShadowMatrices() const;
     GLF_API
-    void SetShadowMatrix(GfMatrix4d const &matrix);
+    void SetShadowMatrices(std::vector<GfMatrix4d> const &matrix);
 
     GLF_API
     int GetShadowResolution() const;
@@ -109,9 +116,14 @@ public:
     void SetShadowBlur(float blur);
 
     GLF_API
-    int GetShadowIndex() const;
+    int GetShadowIndexStart() const;
     GLF_API
-    void SetShadowIndex(int shadowIndex);
+    void SetShadowIndexStart(int shadowStart);
+    
+    GLF_API
+    int GetShadowIndexEnd() const;
+    GLF_API
+    void SetShadowIndexEnd(int shadowEnd);
 
     GLF_API
     bool HasShadow() const;
@@ -119,10 +131,15 @@ public:
     void SetHasShadow(bool hasShadow);
 
     GLF_API
+    bool HasIntensity() const;
+    GLF_API
+    void SetHasIntensity(bool hasIntensity);
+
+    GLF_API
     bool IsCameraSpaceLight() const;
     GLF_API
-    void SetIsCameraSpaceLight(bool isCameraSpaceLight);
 
+    void SetIsCameraSpaceLight(bool isCameraSpaceLight);
     GLF_API
     SdfPath const & GetID() const;
     GLF_API
@@ -133,27 +150,42 @@ public:
     GLF_API
     void SetIsDomeLight(bool isDomeLight);
 
-    // the following Id's are GL resource handles for the precomputed textures
-    // created by HdStLight 
+    /// The path to the (unprocessed) environment map texture.
+    ///
+    /// All textures actually used by the dome light (irradiance, prefilter,
+    /// brdf) are derived from this texture in a pre-calculation step.
     GLF_API
-    uint32_t const & GetIrradianceId() const;
+    const SdfAssetPath &GetDomeLightTextureFile() const;
     GLF_API
-    void SetIrradianceId(uint32_t const & irradianceId);
+    void SetDomeLightTextureFile(const SdfAssetPath &);
+
+
+    /// \name Post Surface Lighting
+    ///
+    /// Post surface lighting is evaluated after other surface illumination
+    /// and can be used to implement lighting effects beyond those that
+    /// correspond to basic positional lighting, e.g. range base fog, etc.
+    ///
+    /// @{
 
     GLF_API
-    uint32_t const & GetPrefilterId() const;
+    TfToken const & GetPostSurfaceIdentifier() const;
     GLF_API
-    void SetPrefilterId(uint32_t const & prefilterId);
+    std::string const & GetPostSurfaceShaderSource() const;
+    GLF_API
+    VtUCharArray const & GetPostSurfaceShaderParams() const;
 
     GLF_API
-    uint32_t const & GetBrdfId() const;
-    GLF_API
-    void SetBrdfId(uint32_t const & brdfId);
+    void SetPostSurfaceParams(TfToken const & identifier,
+                              std::string const & shaderSource,
+                              VtUCharArray const & shaderParams);
 
+    /// @}
+                       
     GLF_API
-    bool operator ==(GlfSimpleLight const & other) const;
+    bool operator ==(GlfSimpleLight const &other) const;
     GLF_API
-    bool operator !=(GlfSimpleLight const & other) const;
+    bool operator !=(GlfSimpleLight const &other) const;
 
 private:
     GLF_API
@@ -168,22 +200,26 @@ private:
     float _spotFalloff;
     GfVec3f _attenuation;
     bool _isCameraSpaceLight;
+    bool _hasIntensity;
 
     bool _hasShadow;
     int _shadowResolution;
     float _shadowBias;
     float _shadowBlur;
-    int _shadowIndex;
+    int _shadowIndexStart;
+    int _shadowIndexEnd;
 
     GfMatrix4d _transform;
-    GfMatrix4d _shadowMatrix;
+    std::vector<GfMatrix4d> _shadowMatrices;
 
     // domeLight specific parameters 
     bool _isDomeLight;
-    // handles for the resource bindings from HdXSimpleLightingShader
-    uint32_t _irradianceId; // pre-computed irradiance map
-    uint32_t _prefilterId;  // pre-computed preFiltered map
-    uint32_t _brdfId;       // pre-computed BRDF look up texture
+    // path to texture for dome light.
+    SdfAssetPath _domeLightTextureFile;
+
+    TfToken _postSurfaceIdentifier;
+    std::string _postSurfaceShaderSource;
+    VtUCharArray _postSurfaceShaderParams;
 
     SdfPath _id;
 };

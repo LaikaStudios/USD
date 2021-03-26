@@ -26,9 +26,9 @@
 
 #include "pxr/usd/usd/debugCodes.h"
 #include "pxr/usd/usd/instanceCache.h"
-#include "pxr/usd/usd/schemaBase.h"
-#include "pxr/usd/usd/schemaRegistry.h"
+#include "pxr/usd/usd/resolver.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/tokens.h"
 #include "pxr/usd/usd/primRange.h"
 
 #include "pxr/usd/kind/registry.h"
@@ -46,10 +46,18 @@ PXR_NAMESPACE_OPEN_SCOPE
 static_assert(sizeof(Usd_PrimData) == 64,
               "Expected sizeof(Usd_PrimData) == 64");
 
+// Usd_PrimData need to be always initialized with a valid type info pointer
+static const UsdPrimTypeInfo *_GetEmptyPrimTypeInfo() 
+{
+    static const UsdPrimTypeInfo *empty = &UsdPrimTypeInfo::GetEmptyPrimType();
+    return empty;
+}
+
 Usd_PrimData::Usd_PrimData(UsdStage *stage, const SdfPath& path)
     : _stage(stage)
     , _primIndex(nullptr)
     , _path(path)
+    , _primTypeInfo(_GetEmptyPrimTypeInfo())
     , _firstChild(nullptr)
     , _refCount(0)
 {
@@ -58,14 +66,14 @@ Usd_PrimData::Usd_PrimData(UsdStage *stage, const SdfPath& path)
 
     TF_DEBUG(USD_PRIM_LIFETIMES).Msg(
         "Usd_PrimData::ctor<%s,%s,%s>\n",
-        _typeName.GetText(), path.GetText(),
+        GetTypeName().GetText(), path.GetText(),
         _stage->GetRootLayer()->GetIdentifier().c_str());
 }
 
 Usd_PrimData::~Usd_PrimData() {
     TF_DEBUG(USD_PRIM_LIFETIMES).Msg(
         "~Usd_PrimData::dtor<%s,%s,%s>\n",
-        _typeName.GetText(), _path.GetText(),
+        GetTypeName().GetText(), _path.GetText(),
         _stage ? _stage->GetRootLayer()->GetIdentifier().c_str() :
         "prim is invalid/expired");
 }
@@ -85,7 +93,7 @@ const PcpPrimIndex &
 Usd_PrimData::GetPrimIndex() const
 {
     static const PcpPrimIndex dummyPrimIndex;
-    return ARCH_UNLIKELY(IsMaster()) ? dummyPrimIndex : *_primIndex;
+    return ARCH_UNLIKELY(IsPrototype()) ? dummyPrimIndex : *_primIndex;
 }
 
 const PcpPrimIndex &
@@ -98,32 +106,33 @@ Usd_PrimData::GetSourcePrimIndex() const
 SdfSpecifier
 Usd_PrimData::GetSpecifier() const
 {
-    return _stage->_GetSpecifier(this);
+    return UsdStage::_GetSpecifier(this);
 }
 
 void
 Usd_PrimData::_ComposeAndCacheFlags(Usd_PrimDataConstPtr parent, 
-                                    bool isMasterPrim)
+                                    bool isPrototypePrim)
 {
     // We do not have to clear _flags here since in the pseudo root or instance
-    // master case the values never change, and in the ordinary prim case we set
-    // every flag.
+    // prototype case the values never change, and in the ordinary prim case we
+    // set every flag (with the exception of the pseudo root flag which is only
+    // set true for the pseudo root and always remains false for every other
+    // prim)
 
     // Special-case the root (the only prim which has no parent) and
-    // instancing masters.
-    if (ARCH_UNLIKELY(!parent || isMasterPrim)) {
+    // instancing prototypes.
+    if (ARCH_UNLIKELY(!parent || isPrototypePrim)) {
         _flags[Usd_PrimActiveFlag] = true;
         _flags[Usd_PrimLoadedFlag] = true;
         _flags[Usd_PrimModelFlag] = true;
         _flags[Usd_PrimGroupFlag] = true;
         _flags[Usd_PrimDefinedFlag] = true;
-        _flags[Usd_PrimMasterFlag] = isMasterPrim;
+        _flags[Usd_PrimPrototypeFlag] = isPrototypePrim;
+        _flags[Usd_PrimPseudoRootFlag] = !parent;
     } 
     else {
         // Compose and cache 'active'.
-        UsdPrim self(Usd_PrimDataIPtr(this), SdfPath());
-        bool active = true;
-        self.GetMetadata(SdfFieldKeys->Active, &active);
+        const bool active = UsdStage::_IsActive(this);
         _flags[Usd_PrimActiveFlag] = active;
 
         // Cache whether or not this prim has a payload.
@@ -143,9 +152,7 @@ Usd_PrimData::_ComposeAndCacheFlags(Usd_PrimDataConstPtr parent,
         // Otherwise we look up the kind metadata and consult the kind registry.
         bool isGroup = false, isModel = false;
         if (parent->IsGroup()) {
-            static TfToken kindToken("kind");
-            TfToken kind;
-            self.GetMetadata(kindToken, &kind);
+            const TfToken kind = UsdStage::_GetKind(this);
             // Use the kind registry to determine model/groupness.
             if (!kind.IsEmpty()) {
                 isGroup = KindRegistry::IsA(kind, KindTokens->group);
@@ -156,7 +163,7 @@ Usd_PrimData::_ComposeAndCacheFlags(Usd_PrimDataConstPtr parent,
         _flags[Usd_PrimModelFlag] = isModel;
 
         // Get specifier.
-        SdfSpecifier specifier = GetSpecifier();
+        const SdfSpecifier specifier = GetSpecifier();
 
         // This prim is abstract if its parent is or if it's a class.
         _flags[Usd_PrimAbstractFlag] =
@@ -174,22 +181,22 @@ Usd_PrimData::_ComposeAndCacheFlags(Usd_PrimDataConstPtr parent,
         _flags[Usd_PrimClipsFlag] = false;
 
         // These flags indicate whether this prim is an instance or an
-        // instance master.
+        // instance prototype.
         _flags[Usd_PrimInstanceFlag] = active && _primIndex->IsInstanceable();
-        _flags[Usd_PrimMasterFlag] = parent->IsInMaster();
+        _flags[Usd_PrimPrototypeFlag] = parent->IsInPrototype();
     }
 }
 
 Usd_PrimDataConstPtr 
-Usd_PrimData::GetPrimDataAtPathOrInMaster(const SdfPath &path) const
+Usd_PrimData::GetPrimDataAtPathOrInPrototype(const SdfPath &path) const
 {
-    return _stage->_GetPrimDataAtPathOrInMaster(path);
+    return _stage->_GetPrimDataAtPathOrInPrototype(path);
 }
 
 Usd_PrimDataConstPtr 
-Usd_PrimData::GetMaster() const
+Usd_PrimData::GetPrototype() const
 {
-    return _stage->_GetMasterForInstance(this);
+    return _stage->_GetPrototypeForInstance(this);
 }
 
 bool
@@ -210,26 +217,28 @@ Usd_DescribePrimData(const Usd_PrimData *p, SdfPath const &proxyPrimPath)
 
     bool isInstance = p->IsInstance();
     bool isInstanceProxy = Usd_IsInstanceProxy(p, proxyPrimPath);
-    bool isInMaster = isInstanceProxy ?
-        Usd_InstanceCache::IsPathInMaster(proxyPrimPath) : p->IsInMaster();
-    bool isMaster = p->IsMaster();
-    Usd_PrimDataConstPtr masterForInstance =
-        isInstance && p->_stage ? p->GetMaster() : nullptr;
+    bool isInPrototype = isInstanceProxy ?
+        Usd_InstanceCache::IsPathInPrototype(proxyPrimPath) : 
+        p->IsInPrototype();
+    bool isPrototype = p->IsPrototype();
+    Usd_PrimDataConstPtr prototypeForInstance =
+        isInstance && p->_stage ? p->GetPrototype() : nullptr;
 
     return TfStringPrintf(
         "%s%s%sprim %s<%s> %s%s%s",
         Usd_IsDead(p) ? "expired " : (p->_flags[Usd_PrimActiveFlag] ?
                                       "" : "inactive "),
-        p->_typeName.IsEmpty() ? "" :
-            TfStringPrintf("'%s' ", p->_typeName.GetText()).c_str(),
+        p->GetTypeName().IsEmpty() ? "" :
+            TfStringPrintf("'%s' ", p->GetTypeName().GetText()).c_str(),
+        // XXX: Add applied schemas to this descriptor
         isInstance ? "instance " : isInstanceProxy ? "instance proxy " : "",
-        isInMaster ? "in master " : "",
+        isInPrototype ? "in prototype " : "",
         isInstanceProxy ? proxyPrimPath.GetText() : p->_path.GetText(),
         (isInstanceProxy || isInstance) ? TfStringPrintf(
-            "with master <%s> ", isInstance ?
-            masterForInstance->GetPath().GetText() :
+            "with prototype <%s> ", isInstance ?
+            prototypeForInstance->GetPath().GetText() :
             p->_path.GetText()).c_str() : "",
-        (isInstanceProxy || isMaster || isInMaster) ? TfStringPrintf(
+        (isInstanceProxy || isPrototype || isInPrototype) ? TfStringPrintf(
             "using prim index <%s> ",
             p->GetSourcePrimIndex().GetPath().GetText()).c_str() : "",
         p->_stage ? TfStringPrintf(

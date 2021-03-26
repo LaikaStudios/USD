@@ -22,11 +22,18 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 #
+from __future__ import division
 
 import sys
 import math
 import unittest
 from pxr.Gf import *
+
+# In python 3 there is no type called "long", but a regular int is backed by
+# a long. Fake it here so we can keep test coverage working for the types
+# available in python 2, where there are separate int and long types
+if sys.version_info.major >= 3:
+    long = int
 
 def err( msg ):
     return "ERROR: " + msg + " failed"
@@ -43,7 +50,7 @@ class TestGfMath(unittest.TestCase):
         self.assertEqual(1.0, _HalfRoundTrip(1.0))
         self.assertEqual(1.0, _HalfRoundTrip(1))
         self.assertEqual(2.0, _HalfRoundTrip(2))
-        self.assertEqual(3.0, _HalfRoundTrip(3L))
+        self.assertEqual(3.0, _HalfRoundTrip(long(3)))
 
         with self.assertRaises(TypeError):
             _HalfRoundTrip([])
@@ -140,6 +147,15 @@ class TestGfMath(unittest.TestCase):
     def test_Dot(self):
         self.assertEqual(Dot(2.0, 3.0), 6.0)
         self.assertEqual(Dot(-2.0, 3.0), -6.0)
+
+    def test_CompMult(self):
+        self.assertEqual(CompMult(2.0, 3.0), 6.0)
+        self.assertEqual(CompMult(-2.0, 3.0), -6.0)
+
+    def test_CompDiv(self):
+        self.assertEqual(CompDiv(6.0, 3.0), 2.0)
+        self.assertEqual(CompDiv(-6.0, 3.0), -2.0)
+
 
 if __name__ == '__main__':
     unittest.main()

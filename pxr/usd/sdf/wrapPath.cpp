@@ -56,11 +56,12 @@ static vector<SdfPath> GetPrefixesHelper( const SdfPath &path ) {
 
 static string
 _Repr(const SdfPath &self) {
-    if (self == SdfPath::EmptyPath()) {
+    if (self.IsEmpty()) {
         return TF_PY_REPR_PREFIX + "Path.emptyPath";
-    } else {
+    }
+    else {
         return string(TF_PY_REPR_PREFIX +
-            "Path(")+TfPyRepr(self.GetString())+")";
+            "Path(")+TfPyRepr(self.GetAsString())+")";
     }
 }
 
@@ -186,6 +187,60 @@ static void _PathStress()
     }
 }
 
+
+struct Sdf_PyPathAncestorsRangeIterator {
+    Sdf_PyPathAncestorsRangeIterator(
+        const SdfPathAncestorsRange::iterator& begin,
+        const SdfPathAncestorsRange::iterator& end)  
+        : _it(begin), _end(end) {}
+
+    SdfPath next() {
+        _RaiseIfAtEnd();
+        if (_didFirst) {
+            ++_it;
+            _RaiseIfAtEnd();
+        }
+        _didFirst = true;
+        return *_it;
+    }
+
+private:
+    void _RaiseIfAtEnd() const {
+        if (_it == _end) {
+            PyErr_SetString(PyExc_StopIteration, "Iterator at end");
+            throw_error_already_set();
+        }
+    }
+
+    SdfPathAncestorsRange::iterator _it, _end;
+    bool _didFirst = false;
+};
+
+
+Sdf_PyPathAncestorsRangeIterator
+Sdf_GetIterator(const SdfPathAncestorsRange& range)
+{
+    return {range.begin(), range.end()};
+}
+
+
+void Sdf_wrapAncestorsRange()
+{
+    using This = SdfPathAncestorsRange;
+
+    scope s = class_<This>("AncestorsRange", init<const SdfPath&>() )
+        .def("GetPath", &This::GetPath,
+             return_value_policy<return_by_value>())
+        .def("__iter__", &Sdf_GetIterator)
+        ;
+
+    using Iter = Sdf_PyPathAncestorsRangeIterator;
+    class_<Iter>("_iterator", no_init)
+        .def(TfPyIteratorNextMethodName, &Iter::next)
+        ;
+}
+
+
 } // anonymous namespace 
 
 void wrapPath() {    
@@ -210,8 +265,7 @@ void wrapPath() {
         .add_property("pathElementCount", &This::GetPathElementCount, 
             "The number of path elements in this path.")
         .add_property("pathString",
-            make_function(&This::GetString, 
-                return_value_policy<return_by_value>()),
+            make_function(&This::GetAsString),
             "The string representation of this path.")
         .add_property("name", make_function(&This::GetName, 
                     return_value_policy<copy_const_reference>()), 
@@ -239,6 +293,7 @@ void wrapPath() {
              return_value_policy<TfPyPairToTuple>())
 
         .def("IsAbsolutePath", &This::IsAbsolutePath)
+        .def("IsAbsoluteRootPath", &This::IsAbsoluteRootPath)
         .def("IsPrimPath", &This::IsPrimPath)
         .def("IsAbsoluteRootOrPrimPath", &This::IsAbsoluteRootOrPrimPath)
         .def("IsRootPrimPath", &This::IsRootPrimPath)
@@ -265,6 +320,8 @@ void wrapPath() {
         .def("GetPrefixes", GetPrefixesHelper,
               return_value_policy< TfPySequenceToList >(), 
             "Returns the prefix paths of this path.")
+
+        .def("GetAncestorsRange", &This::GetAncestorsRange)
 
         .def("GetParentPath", &This::GetParentPath)
         .def("GetPrimPath", &This::GetPrimPath)
@@ -344,11 +401,9 @@ void wrapPath() {
         .def("FindLongestStrictPrefix", _FindLongestStrictPrefix)
             .staticmethod("FindLongestStrictPrefix")
 
-        .def("__str__", 
-            make_function(&This::GetString, 
-                return_value_policy<return_by_value>()))
+        .def("__str__", make_function(&This::GetAsString))
 
-        .def("__nonzero__", __nonzero__)
+        .def(TfPyBoolBuiltinFuncName, __nonzero__)
 
         .def(self == self)
         .def(self != self)
@@ -394,4 +449,5 @@ void wrapPath() {
         Wrap<Sdf_PathIsValidPathStringResult>("_IsValidPathStringResult",
                                             "errorMessage");
 
+    Sdf_wrapAncestorsRange();
 }

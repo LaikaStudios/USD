@@ -34,7 +34,6 @@
 #include "hdPrman/renderDelegate.h"
 #include "hdPrman/renderParam.h"
 #include "hdPrman/renderPass.h"
-#include "hdPrman/resourceRegistry.h"
 #include "hdPrman/volume.h"
 
 #include "pxr/imaging/hd/tokens.h"
@@ -51,6 +50,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 TF_DEFINE_PRIVATE_TOKENS(
     _tokens,
     (openvdbAsset)
+    (field3dAsset)
 );
 
 TF_DEFINE_PUBLIC_TOKENS(HdPrmanIntegratorTokens,
@@ -82,6 +82,7 @@ const TfTokenVector HdPrmanRenderDelegate::SUPPORTED_SPRIM_TYPES =
 const TfTokenVector HdPrmanRenderDelegate::SUPPORTED_BPRIM_TYPES =
 {
     _tokens->openvdbAsset,
+    _tokens->field3dAsset
 };
 
 HdPrmanRenderDelegate::HdPrmanRenderDelegate(
@@ -102,7 +103,10 @@ void
 HdPrmanRenderDelegate::_Initialize()
 {
     _renderParam = std::make_shared<HdPrman_RenderParam>(_context);
-    _resourceRegistry = boost::make_shared<HdPrman_ResourceRegistry>(_context);
+
+    // Initialize default resource registry. HdxPrman may override this with its
+    // resource registry during HdxPrmanRenderDelegate::_Initialize.
+    _resourceRegistry = std::make_shared<HdResourceRegistry>();
 
     std::string integrator = HdPrmanIntegratorTokens->PxrPathTracer;
     const std::string interactiveIntegrator = 
@@ -220,10 +224,9 @@ HdPrmanRenderDelegate::CreateRenderPass(HdRenderIndex *index,
 
 HdInstancer *
 HdPrmanRenderDelegate::CreateInstancer(HdSceneDelegate *delegate,
-                                        SdfPath const& id,
-                                        SdfPath const& instancerId)
+                                        SdfPath const& id)
 {
-    return new HdPrmanInstancer(delegate, id, instancerId);
+    return new HdPrmanInstancer(delegate, id);
 }
 
 void
@@ -234,17 +237,16 @@ HdPrmanRenderDelegate::DestroyInstancer(HdInstancer *instancer)
 
 HdRprim *
 HdPrmanRenderDelegate::CreateRprim(TfToken const& typeId,
-                                    SdfPath const& rprimId,
-                                    SdfPath const& instancerId)
+                                    SdfPath const& rprimId)
 {
     if (typeId == HdPrimTypeTokens->mesh) {
-        return new HdPrman_Mesh(rprimId, instancerId);
+        return new HdPrman_Mesh(rprimId);
     } else if (typeId == HdPrimTypeTokens->basisCurves) {
-        return new HdPrman_BasisCurves(rprimId, instancerId);
+        return new HdPrman_BasisCurves(rprimId);
     } else if (typeId == HdPrimTypeTokens->points) {
-        return new HdPrman_Points(rprimId, instancerId);
+        return new HdPrman_Points(rprimId);
     } else if (typeId == HdPrimTypeTokens->volume) {
-        return new HdPrman_Volume(rprimId, instancerId);
+        return new HdPrman_Volume(rprimId);
     } else {
         TF_CODING_ERROR("Unknown Rprim Type %s", typeId.GetText());
     }
@@ -325,7 +327,8 @@ HdBprim *
 HdPrmanRenderDelegate::CreateBprim(TfToken const& typeId,
                                     SdfPath const& bprimId)
 {
-    if (typeId == _tokens->openvdbAsset) {
+    if (typeId == _tokens->openvdbAsset ||
+        typeId == _tokens->field3dAsset) {
         return new HdPrman_Field(typeId, bprimId);
     } else {
         TF_CODING_ERROR("Unknown Bprim Type %s", typeId.GetText());
@@ -336,7 +339,8 @@ HdPrmanRenderDelegate::CreateBprim(TfToken const& typeId,
 HdBprim *
 HdPrmanRenderDelegate::CreateFallbackBprim(TfToken const& typeId)
 {
-    if (typeId == _tokens->openvdbAsset) {
+    if (typeId == _tokens->openvdbAsset ||
+        typeId == _tokens->field3dAsset) {
         return new HdPrman_Field(typeId, SdfPath::EmptyPath());
     } else {
         TF_CODING_ERROR("Unknown Bprim Type %s", typeId.GetText());

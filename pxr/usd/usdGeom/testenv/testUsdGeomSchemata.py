@@ -23,7 +23,7 @@
 # language governing permissions and limitations under the Apache License.
 
 import sys, unittest
-from pxr import Sdf, Usd, UsdGeom, Vt, Gf
+from pxr import Sdf, Usd, UsdGeom, Vt, Gf, Tf
 
 class TestUsdGeomSchemata(unittest.TestCase):
     def test_Basic(self):
@@ -37,7 +37,8 @@ class TestUsdGeomSchemata(unittest.TestCase):
         self.assertTrue(mesh)
         self.assertTrue(mesh.GetPrim())
         self.assertTrue(not mesh.GetPointsAttr().Get(1))
-        self.assertEqual(p.GetTypeName(), mesh.GetSchemaClassPrimDefinition().typeName)
+        self.assertEqual(p.GetTypeName(), 
+            Usd.SchemaRegistry().GetSchemaTypeName(mesh._GetStaticTfType()))
 
         #
         # Make sure uniform access behaves as expected.
@@ -417,17 +418,19 @@ class TestUsdGeomSchemata(unittest.TestCase):
         self.assertEqual(ids, resolvedIds)
      
 
-    def test_Bug111239(self):
-        # This bug broke the schema registry for prims whose typenames authored in
-        # scene description were their canonical C++ typenames, rather than their
-        # alias under UsdSchemaBase.  For example, if you had a prim with typename
-        # 'UsdGeomSphere' instead of 'Sphere', we would not find builtins for the
-        # prim with typename 'UsdGeomSphere'.
+    def test_Revert_Bug111239(self):
+        # This used to test a change for Bug111239, but now tests that this
+        # fix has been reverted. We no longer allow the C++ typename be used as
+        # a prim's typename.
         s = Usd.Stage.CreateInMemory()
         sphere = s.DefinePrim('/sphere', typeName='Sphere')
-        usdGeomSphere = s.DefinePrim('/usdGeomSphere', typeName='UsdGeomSphere')
+        tfTypeName = UsdGeom.Sphere._GetStaticTfType().typeName
+        self.assertEqual(tfTypeName, 'UsdGeomSphere')
+        usdGeomSphere = s.DefinePrim('/usdGeomSphere', typeName='tfTypeName')
+        self.assertTrue(UsdGeom.Sphere(sphere))
         self.assertTrue('radius' in [a.GetName() for a in sphere.GetAttributes()])
-        self.assertTrue('radius' in [a.GetName() for a in usdGeomSphere.GetAttributes()])
+        self.assertFalse(UsdGeom.Sphere(usdGeomSphere))
+        self.assertFalse('radius' in [a.GetName() for a in usdGeomSphere.GetAttributes()])
 
     def test_ComputeExtent(self):
 
@@ -637,9 +640,9 @@ class TestUsdGeomSchemata(unittest.TestCase):
         imageable = Tf.Type.FindByName("UsdGeomImageable")
         geomModelAPI = Tf.Type.FindByName("UsdGeomModelAPI")
 
-        self.assertTrue(Usd.SchemaRegistry.IsConcrete(xform))
-        self.assertFalse(Usd.SchemaRegistry.IsConcrete(imageable))
-        self.assertFalse(Usd.SchemaRegistry.IsConcrete(geomModelAPI))
+        self.assertTrue(Usd.SchemaRegistry().IsConcrete(xform))
+        self.assertFalse(Usd.SchemaRegistry().IsConcrete(imageable))
+        self.assertFalse(Usd.SchemaRegistry().IsConcrete(geomModelAPI))
 
     def test_Apply(self):
         s = Usd.Stage.CreateInMemory('AppliedSchemas.usd')
@@ -655,6 +658,13 @@ class TestUsdGeomSchemata(unittest.TestCase):
         # Ensure duplicates aren't picked up
         UsdGeom.ModelAPI.Apply(root)
         self.assertEqual(['MotionAPI', 'GeomModelAPI'], root.GetAppliedSchemas())
+
+        # Verify that we get exceptions but don't crash when applying to the 
+        # null prim.
+        with self.assertRaises(Tf.ErrorException):
+            self.assertFalse(UsdGeom.MotionAPI.Apply(Usd.Prim()))
+        with self.assertRaises(Tf.ErrorException):
+            self.assertFalse(UsdGeom.ModelAPI.Apply(Usd.Prim()))
 
     def test_IsATypeless(self):
         from pxr import Usd, Tf

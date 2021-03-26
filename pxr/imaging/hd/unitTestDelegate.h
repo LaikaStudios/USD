@@ -75,7 +75,7 @@ public:
                  VtIntArray const &verts,
                  bool guide=false,
                  SdfPath const &instancerId=SdfPath(),
-                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmark,
+                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmullClark,
                  TfToken const &orientation=HdTokens->rightHanded,
                  bool doubleSided=false);
 
@@ -93,7 +93,7 @@ public:
                  HdInterpolation opacityInterpolation,
                  bool guide=false,
                  SdfPath const &instancerId=SdfPath(),
-                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmark,
+                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmullClark,
                  TfToken const &orientation=HdTokens->rightHanded,
                  bool doubleSided=false);
 
@@ -101,7 +101,7 @@ public:
     HD_API
     void AddCube(SdfPath const &id, GfMatrix4f const &transform, bool guide=false,
                  SdfPath const &instancerId=SdfPath(),
-                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmark);
+                 TfToken const &scheme=PxOsdOpenSubdivTokens->catmullClark);
 
     /// Add a grid with division x*y
     HD_API
@@ -208,6 +208,29 @@ public:
                                 VtVec4fArray const &rotate,
                                 VtVec3fArray const &translate);
 
+    HD_API
+    void UpdateInstancer(SdfPath const& rprimId, SdfPath const& instancerId);
+
+    /// Primvars
+    HD_API
+    void AddPrimvar(SdfPath const& id,
+                    TfToken const& name,
+                    VtValue const& value,
+                    HdInterpolation const& interp,
+                    TfToken const& role);
+    
+    HD_API
+    void UpdatePrimvarValue(SdfPath const& id,
+                            TfToken const& name,
+                            VtValue const& value);
+    
+    HD_API
+    void RemovePrimvar(SdfPath const& id, TfToken const& name);
+
+    /// Transform
+    HD_API
+    void UpdateTransform(SdfPath const& id, GfMatrix4f const& mat);
+    
     /// Material
     HD_API
     void AddMaterialResource(SdfPath const &id,
@@ -338,24 +361,29 @@ public:
     HD_API
     virtual SdfPath GetMaterialId(SdfPath const& rprimId) override;
 
+    HD_API
+    virtual SdfPath GetInstancerId(SdfPath const& primId) override;
+
     HD_API 
     virtual VtValue GetMaterialResource(SdfPath const &materialId) override;
 
     HD_API
     virtual VtValue GetCameraParamValue(SdfPath const &cameraId, 
                                         TfToken const &paramName) override;
-    HD_API
-    virtual HdTextureResource::ID GetTextureResourceID(
-        SdfPath const& textureId) override;
-    HD_API
-    virtual HdTextureResourceSharedPtr GetTextureResource(
-        SdfPath const& textureId) override;
 
     HD_API
     virtual HdRenderBufferDescriptor GetRenderBufferDescriptor(
         SdfPath const& id) override;
 
 private:
+    // ---------------------------------------------------------------------- //
+    // private utility methods
+    // ---------------------------------------------------------------------- //
+    VtValue _GetPrimvarValue(SdfPath const& id, TfToken const& name);
+
+    // ---------------------------------------------------------------------- //
+    // internal types
+    // ---------------------------------------------------------------------- //
     struct _Mesh {
         _Mesh() { }
         _Mesh(TfToken const &scheme,
@@ -366,18 +394,12 @@ private:
               VtIntArray const &verts,
               VtIntArray const &holes,
               PxOsdSubdivTags const &subdivTags,
-              VtValue const &color,
-              HdInterpolation colorInterpolation,
-              VtValue const &opacity,
-              HdInterpolation opacityInterpolation,
               bool guide,
               bool doubleSided) :
             scheme(scheme), orientation(orientation),
             transform(transform),
             points(points), numVerts(numVerts), verts(verts),
-            holes(holes), subdivTags(subdivTags), color(color),
-            colorInterpolation(colorInterpolation), opacity(opacity),
-            opacityInterpolation(opacityInterpolation), guide(guide),
+            holes(holes), subdivTags(subdivTags), guide(guide),
             doubleSided(doubleSided) { }
 
         TfToken scheme;
@@ -388,10 +410,6 @@ private:
         VtIntArray verts;
         VtIntArray holes;
         PxOsdSubdivTags subdivTags;
-        VtValue color;
-        HdInterpolation colorInterpolation;
-        VtValue opacity;
-        HdInterpolation opacityInterpolation;
         bool guide;
         bool doubleSided;
         HdReprSelector reprSelector;
@@ -400,56 +418,21 @@ private:
         _Curves() { }
         _Curves(VtVec3fArray const &points,
                 VtIntArray const &curveVertexCounts,
-                VtVec3fArray const &normals,
                 TfToken const &type,
-                TfToken const &basis,
-                VtValue const &color,
-                HdInterpolation colorInterpolation,
-                VtValue const &opacity,
-                HdInterpolation opacityInterpolation,
-                VtValue const &width,
-                HdInterpolation widthInterpolation) :
+                TfToken const &basis) :
             points(points), curveVertexCounts(curveVertexCounts), 
-            normals(normals),
-            type(type),
-            basis(basis),
-            color(color), colorInterpolation(colorInterpolation),
-            opacity(opacity), opacityInterpolation(opacityInterpolation),
-            width(width), widthInterpolation(widthInterpolation) { }
+            type(type), basis(basis) { }
 
         VtVec3fArray points;
         VtIntArray curveVertexCounts;
-        VtVec3fArray normals;
         TfToken type;
         TfToken basis;
-        VtValue color;
-        HdInterpolation colorInterpolation;
-        VtValue opacity;
-        HdInterpolation opacityInterpolation;
-        VtValue width;
-        HdInterpolation widthInterpolation;
     };
     struct _Points {
         _Points() { }
-        _Points(VtVec3fArray const &points,
-                VtValue const &color,
-                HdInterpolation colorInterpolation,
-                VtValue const &opacity,
-                HdInterpolation opacityInterpolation,
-                VtValue const &width,
-                HdInterpolation widthInterpolation) :
-            points(points),
-            color(color), colorInterpolation(colorInterpolation),
-            opacity(opacity), opacityInterpolation(opacityInterpolation),
-            width(width), widthInterpolation(widthInterpolation) { }
+        _Points(VtVec3fArray const &points) : points(points) { }
 
         VtVec3fArray points;
-        VtValue color;
-        HdInterpolation colorInterpolation;
-        VtValue opacity;
-        HdInterpolation opacityInterpolation;
-        VtValue width;
-        HdInterpolation widthInterpolation;
     };
     struct _Instancer {
         _Instancer() { }
@@ -468,6 +451,29 @@ private:
 
         std::vector<SdfPath> prototypes;
     };
+    struct _Primvar {
+        _Primvar() {}
+        _Primvar(TfToken const& _name,
+                 VtValue const& _value,
+                 HdInterpolation const& _interp,
+                 TfToken const& _role) :
+            name(_name),
+            value(_value),
+            interp(_interp),
+            role(_role) {}
+
+        TfToken name;
+        VtValue value;
+        HdInterpolation interp;
+        TfToken role;
+    };
+    using _Primvars = std::vector<_Primvar>;
+    // Given an rprim id and primvar name, looks up the primvars map (see below)
+    // and returns true with the iterator to the entry if it was found.
+    bool _FindPrimvar(SdfPath const& id,
+                      TfToken const& name,
+                      _Primvars::iterator *pvIt);
+
     struct _Camera {
         VtDictionary params;
     };
@@ -490,6 +496,7 @@ private:
     std::map<SdfPath, _Curves> _curves;
     std::map<SdfPath, _Points> _points;
     std::map<SdfPath, _Instancer> _instancers;
+    std::map<SdfPath, _Primvars> _primvars;
     std::map<SdfPath, VtValue> _materials;
     std::map<SdfPath, _Camera> _cameras;
     std::map<SdfPath, _RenderBuffer> _renderBuffers;
@@ -499,6 +506,7 @@ private:
 
     typedef std::map<SdfPath, SdfPath> SdfPathMap;
     SdfPathMap _materialBindings;
+    SdfPathMap _instancerBindings;
 
     bool _hasInstancePrimvars;
     int _refineLevel;

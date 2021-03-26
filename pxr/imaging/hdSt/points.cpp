@@ -24,13 +24,15 @@
 #include "pxr/pxr.h"
 
 #include "pxr/imaging/hdSt/drawItem.h"
+#include "pxr/imaging/hdSt/extCompGpuComputation.h"
 #include "pxr/imaging/hdSt/geometricShader.h"
 #include "pxr/imaging/hdSt/instancer.h"
 #include "pxr/imaging/hdSt/material.h"
 #include "pxr/imaging/hdSt/points.h"
 #include "pxr/imaging/hdSt/pointsShaderKey.h"
+#include "pxr/imaging/hdSt/primUtils.h"
 #include "pxr/imaging/hdSt/resourceRegistry.h"
-#include "pxr/imaging/hdSt/rprimUtils.h"
+#include "pxr/imaging/hdSt/tokens.h"
 
 #include "pxr/imaging/hd/bufferSource.h"
 #include "pxr/imaging/hd/perfLog.h"
@@ -43,21 +45,16 @@
 #include "pxr/base/tf/getenv.h"
 #include "pxr/base/vt/value.h"
 
-#include <iostream>
-
 PXR_NAMESPACE_OPEN_SCOPE
 
-HdStPoints::HdStPoints(SdfPath const& id,
-                       SdfPath const& instancerId)
-  : HdPoints(id, instancerId)
+HdStPoints::HdStPoints(SdfPath const& id)
+  : HdPoints(id)
+  , _displayOpacity(false)
 {
     /*NOTHING*/
 }
 
-HdStPoints::~HdStPoints()
-{
-    /*NOTHING*/
-}
+HdStPoints::~HdStPoints() = default;
 
 void
 HdStPoints::Sync(HdSceneDelegate *delegate,
@@ -65,16 +62,21 @@ HdStPoints::Sync(HdSceneDelegate *delegate,
                  HdDirtyBits     *dirtyBits,
                  TfToken const   &reprToken)
 {
-    TF_UNUSED(renderParam);
-
+    bool updateMaterialTag = false;
     if (*dirtyBits & HdChangeTracker::DirtyMaterialId) {
-        _SetMaterialId(delegate->GetRenderIndex().GetChangeTracker(),
-                       delegate->GetMaterialId(GetId()));
-
-        _sharedData.materialTag = _GetMaterialTag(delegate->GetRenderIndex());
+        HdStSetMaterialId(delegate, renderParam, this);
+        updateMaterialTag = true;
     }
 
-    _UpdateRepr(delegate, reprToken, dirtyBits);
+    bool displayOpacity = _displayOpacity;
+    _UpdateRepr(delegate, renderParam, reprToken, dirtyBits);
+
+    if (updateMaterialTag || 
+        (GetMaterialId().IsEmpty() && displayOpacity != _displayOpacity)) {
+
+        HdStSetMaterialTag(delegate, renderParam, this, _displayOpacity,
+                           /*occludedSelectionShowsThrough = */false);
+    }
 
     // This clears all the non-custom dirty bits. This ensures that the rprim
     // doesn't have pending dirty bits that add it to the dirty list every
@@ -84,24 +86,15 @@ HdStPoints::Sync(HdSceneDelegate *delegate,
     *dirtyBits &= ~HdChangeTracker::AllSceneDirtyBits;
 }
 
-const TfToken&
-HdStPoints::_GetMaterialTag(const HdRenderIndex &renderIndex) const
+void
+HdStPoints::Finalize(HdRenderParam *renderParam)
 {
-    const HdStMaterial *material =
-        static_cast<const HdStMaterial *>(
-                renderIndex.GetSprim(HdPrimTypeTokens->material,
-                                     GetMaterialId()));
-
-    if (material) {
-        return material->GetMaterialTag();
-    }
-
-    // A material may have been unbound, we should clear the old tag
-    return HdMaterialTagTokens->defaultMaterialTag;
+    HdStMarkGarbageCollectionNeeded(renderParam);
 }
 
 void
 HdStPoints::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
+                            HdRenderParam *renderParam,
                             HdStDrawItem *drawItem,
                             HdDirtyBits *dirtyBits)
 {
@@ -116,36 +109,54 @@ HdStPoints::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
     /* MATERIAL SHADER (may affect subsequent primvar population) */
     drawItem->SetMaterialShader(HdStGetMaterialShader(this, sceneDelegate));
 
+    // Reset value of _displayOpacity
+    if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
+        _displayOpacity = false;
+    }
+
+    /* INSTANCE PRIMVARS */
+    _UpdateInstancer(sceneDelegate, dirtyBits);
+        HdStUpdateInstancerData(sceneDelegate->GetRenderIndex(),
+                                renderParam,
+                                this,
+                                drawItem,
+                                &_sharedData,
+                                *dirtyBits);
+
+    _displayOpacity = _displayOpacity ||
+            HdStIsInstancePrimvarExistentAndValid(
+            sceneDelegate->GetRenderIndex(), this, HdTokens->displayOpacity);
+
     /* CONSTANT PRIMVARS, TRANSFORM, EXTENT AND PRIMID */
     if (HdStShouldPopulateConstantPrimvars(dirtyBits, id)) {
         HdPrimvarDescriptorVector constantPrimvars =
             HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
                                     HdInterpolationConstant);
 
-        HdStPopulateConstantPrimvars(this, &_sharedData, sceneDelegate, 
-            drawItem, dirtyBits, constantPrimvars);
-    }
-
-    /* INSTANCE PRIMVARS */
-    if (!GetInstancerId().IsEmpty()) {
-        HdStInstancer *instancer = static_cast<HdStInstancer*>(
-            sceneDelegate->GetRenderIndex().GetInstancer(GetInstancerId()));
-        if (TF_VERIFY(instancer)) {
-            instancer->PopulateDrawItem(this, drawItem,
-                                        &_sharedData, *dirtyBits);
-        }
+        HdStPopulateConstantPrimvars(this,
+                                     &_sharedData,
+                                     sceneDelegate,
+                                     renderParam,
+                                     drawItem,
+                                     dirtyBits,
+                                     constantPrimvars);
+        
+        _displayOpacity = _displayOpacity ||
+            HdStIsPrimvarExistentAndValid(this, sceneDelegate, 
+            constantPrimvars, HdTokens->displayOpacity);
     }
 
     HdSt_PointsShaderKey shaderKey;
     HdStResourceRegistrySharedPtr resourceRegistry =
-        boost::static_pointer_cast<HdStResourceRegistry>(
+        std::static_pointer_cast<HdStResourceRegistry>(
             sceneDelegate->GetRenderIndex().GetResourceRegistry());
     drawItem->SetGeometricShader(
         HdSt_GeometricShader::Create(shaderKey, resourceRegistry));
 
     /* PRIMVAR */
     if (HdChangeTracker::IsAnyPrimvarDirty(*dirtyBits, id)) {
-        _PopulateVertexPrimvars(sceneDelegate, drawItem, dirtyBits);
+        _PopulateVertexPrimvars(
+            sceneDelegate, renderParam, drawItem, dirtyBits);
     }
 
     // VertexPrimvar may be null, if there are no points in the prim.
@@ -155,6 +166,7 @@ HdStPoints::_UpdateDrawItem(HdSceneDelegate *sceneDelegate,
 
 void
 HdStPoints::_UpdateRepr(HdSceneDelegate *sceneDelegate,
+                        HdRenderParam *renderParam,
                         TfToken const &reprToken,
                         HdDirtyBits *dirtyBits)
 {
@@ -166,8 +178,9 @@ HdStPoints::_UpdateRepr(HdSceneDelegate *sceneDelegate,
     HdReprSharedPtr const &curRepr = _smoothHullRepr;
 
     if (TfDebug::IsEnabled(HD_RPRIM_UPDATED)) {
-        std::cout << "HdStPoints::_UpdateRepr " << GetId()
-                  << " Repr = " << HdReprTokens->smoothHull << "\n";
+        TfDebug::Helper().Msg(
+            "HdStPoints::_UpdateRepr for %s : Repr = %s\n",
+            GetId().GetText(), reprToken.GetText());
         HdChangeTracker::DumpDirtyBits(*dirtyBits);
     }
 
@@ -179,7 +192,8 @@ HdStPoints::_UpdateRepr(HdSceneDelegate *sceneDelegate,
             HdStDrawItem *drawItem = static_cast<HdStDrawItem*>(
                 curRepr->GetDrawItem(drawItemIndex++));
             if (HdChangeTracker::IsDirty(*dirtyBits)) {
-                _UpdateDrawItem(sceneDelegate, drawItem, dirtyBits);
+                _UpdateDrawItem(
+                    sceneDelegate, renderParam, drawItem, dirtyBits);
             }
         }
     }
@@ -189,6 +203,7 @@ HdStPoints::_UpdateRepr(HdSceneDelegate *sceneDelegate,
 
 void
 HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
+                                    HdRenderParam *renderParam,
                                     HdStDrawItem *drawItem,
                                     HdDirtyBits *dirtyBits)
 {
@@ -197,87 +212,119 @@ HdStPoints::_PopulateVertexPrimvars(HdSceneDelegate *sceneDelegate,
 
     SdfPath const& id = GetId();
     HdStResourceRegistrySharedPtr const& resourceRegistry = 
-        boost::static_pointer_cast<HdStResourceRegistry>(
+        std::static_pointer_cast<HdStResourceRegistry>(
         sceneDelegate->GetRenderIndex().GetResourceRegistry());
 
-    // The "points" attribute is expected to be in this list.
-    HdPrimvarDescriptorVector primvars =
-        HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
-                                  HdInterpolationVertex);
+    // Gather vertex and varying primvars
+    HdPrimvarDescriptorVector primvars;
+    {
+        primvars = HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
+                                    HdInterpolationVertex);
 
-    // Add varying primvars so we can process them together, below.
-    HdPrimvarDescriptorVector varyingPvs =
-        HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
-                                  HdInterpolationVarying);
-    primvars.insert(primvars.end(), varyingPvs.begin(), varyingPvs.end());
+        HdPrimvarDescriptorVector varyingPvs =
+            HdStGetPrimvarDescriptors(this, drawItem, sceneDelegate,
+                                    HdInterpolationVarying);
+        primvars.insert(primvars.end(), varyingPvs.begin(), varyingPvs.end());
+    } 
 
-    HdBufferSourceVector sources;
+    // Get computed vertex primvars
+    HdExtComputationPrimvarDescriptorVector compPrimvars =
+        sceneDelegate->GetExtComputationPrimvarDescriptors(id,
+            HdInterpolationVertex);
+
+    HdBufferSourceSharedPtrVector sources;
+    HdBufferSourceSharedPtrVector reserveOnlySources;
+    HdBufferSourceSharedPtrVector separateComputationSources;
+    HdStComputationSharedPtrVector computations;
     sources.reserve(primvars.size());
 
-    int pointsIndexInSourceArray = -1;
+    HdSt_GetExtComputationPrimvarsComputations(
+        id,
+        sceneDelegate,
+        compPrimvars,
+        *dirtyBits,
+        &sources,
+        &reserveOnlySources,
+        &separateComputationSources,
+        &computations);
 
     for (HdPrimvarDescriptor const& primvar: primvars) {
-        if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name))
+        if (!HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, primvar.name)) {
             continue;
+        }
 
-        // TODO: We don't need to pull primvar metadata every time a value
-        // changes, but we need support from the delegate.
-
-        //assert name not in range.bufferArray.GetResources()
         VtValue value = GetPrimvar(sceneDelegate, primvar.name);
 
         if (!value.IsEmpty()) {
-            // Store where the points will be stored in the source array
-            // we need this later to figure out if the number of points is
-            // changing and we need to force a garbage collection to resize
-            // the buffer
-            if (primvar.name == HdTokens->points) {
-                pointsIndexInSourceArray = sources.size();
-            }
-
-            // XXX: do we need special treatment for width as basicCurves?
-
             HdBufferSourceSharedPtr source(
                 new HdVtBufferSource(primvar.name, value));
             sources.push_back(source);
+
+            if (primvar.name == HdTokens->displayOpacity) {
+                _displayOpacity = true;
+            }
         }
     }
 
-    // return before allocation if it's empty.
-    if (sources.empty())
+    HdBufferArrayRangeSharedPtr const& bar = drawItem->GetVertexPrimvarRange();
+    
+    if (HdStCanSkipBARAllocationOrUpdate(
+            sources, computations, bar, *dirtyBits)) {
         return;
+    }
 
-    if (!drawItem->GetVertexPrimvarRange() ||
-        !drawItem->GetVertexPrimvarRange()->IsValid()) {
-        // initialize buffer array
-        HdBufferSpecVector bufferSpecs;
-        HdBufferSpec::GetBufferSpecs(sources, &bufferSpecs);
+    // XXX: This should be based off the DirtyPrimvarDesc bit.
+    bool hasDirtyPrimvarDesc = (*dirtyBits & HdChangeTracker::DirtyPrimvar);
+    HdBufferSpecVector removedSpecs;
+    if (hasDirtyPrimvarDesc) {
+        TfTokenVector internallyGeneratedPrimvars; // none
+        removedSpecs = HdStGetRemovedPrimvarBufferSpecs(bar, primvars, 
+            internallyGeneratedPrimvars, id);
+    }
 
-        HdBufferArrayRangeSharedPtr range =
-            resourceRegistry->AllocateNonUniformBufferArrayRange(
-                HdTokens->primvar, bufferSpecs, HdBufferArrayUsageHint());
-        _sharedData.barContainer.Set(
-            drawItem->GetDrawingCoord()->GetVertexPrimvarIndex(), range);
+    HdBufferSpecVector bufferSpecs;
+    HdBufferSpec::GetBufferSpecs(sources, &bufferSpecs);
+    HdBufferSpec::GetBufferSpecs(reserveOnlySources, &bufferSpecs);
+    HdStGetBufferSpecsFromCompuations(computations, &bufferSpecs);
+    
+    HdBufferArrayRangeSharedPtr range =
+        resourceRegistry->UpdateNonUniformBufferArrayRange(
+            HdTokens->primvar, bar, bufferSpecs, removedSpecs,
+            HdBufferArrayUsageHint());
 
-    } else if (pointsIndexInSourceArray >=0) {
+    HdStUpdateDrawItemBAR(
+        range,
+        drawItem->GetDrawingCoord()->GetVertexPrimvarIndex(),
+        &_sharedData,
+        renderParam,
+        &(sceneDelegate->GetRenderIndex().GetChangeTracker()));
 
-        int previousRange = drawItem->GetVertexPrimvarRange()->GetNumElements();
-        int newRange = sources[pointsIndexInSourceArray]->GetNumElements();
-
-        // Check if the range is different and if so force a garbage collection
-        // which will make sure the points are up to date; also mark batches
-        // dirty.
-        if(previousRange != newRange) {
-            sceneDelegate->GetRenderIndex().GetChangeTracker().
-                SetGarbageCollectionNeeded();
-            sceneDelegate->GetRenderIndex().GetChangeTracker().
-                MarkBatchesDirty();
+    if (!sources.empty() || !computations.empty()) {
+        // If sources or computations are to be queued against the resulting
+        // BAR, we expect it to be valid.
+        if (!TF_VERIFY(drawItem->GetVertexPrimvarRange()->IsValid())) {
+            return;
         }
     }
 
     // add sources to update queue
-    resourceRegistry->AddSources(drawItem->GetVertexPrimvarRange(),
-                                 sources);
+    if (!sources.empty()) {
+        resourceRegistry->AddSources(drawItem->GetVertexPrimvarRange(),
+                                     std::move(sources));
+    }
+    // add gpu computations to queue.
+    for (auto const& compQueuePair : computations) {
+        HdComputationSharedPtr const& comp = compQueuePair.first;
+        HdStComputeQueue queue = compQueuePair.second;
+        resourceRegistry->AddComputation(
+            drawItem->GetVertexPrimvarRange(), comp, queue);
+    }
+    if (!separateComputationSources.empty()) {
+        for(HdBufferSourceSharedPtr const& compSrc : 
+                separateComputationSources) {
+            resourceRegistry->AddSource(compSrc);
+        }
+    }
 }
 
 HdDirtyBits 
@@ -294,11 +341,8 @@ HdStPoints::GetInitialDirtyBitsMask() const
         | HdChangeTracker::DirtyTransform
         | HdChangeTracker::DirtyVisibility
         | HdChangeTracker::DirtyWidths
+        | HdChangeTracker::DirtyInstancer
         ;
-
-    if (!GetInstancerId().IsEmpty()) {
-        mask |= HdChangeTracker::DirtyInstancer;
-    }
 
     return mask;
 }
@@ -324,9 +368,10 @@ HdStPoints::_InitRepr(TfToken const &reprToken, HdDirtyBits *dirtyBits)
             const HdPointsReprDesc &desc = descs[descIdx];
 
             if (desc.geomStyle != HdPointsGeomStyleInvalid) {
-                HdDrawItem *drawItem = new HdStDrawItem(&_sharedData);
+                HdRepr::DrawItemUniquePtr drawItem =
+                    std::make_unique<HdStDrawItem>(&_sharedData);
                 HdDrawingCoord *drawingCoord = drawItem->GetDrawingCoord();
-                _smoothHullRepr->AddDrawItem(drawItem);
+                _smoothHullRepr->AddDrawItem(std::move(drawItem));
 
                 // Set up drawing coord instance primvars.
                 drawingCoord->SetInstancePrimvarBaseIndex(

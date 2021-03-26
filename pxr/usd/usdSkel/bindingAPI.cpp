@@ -62,7 +62,12 @@ UsdSkelBindingAPI::Get(const UsdStagePtr &stage, const SdfPath &path)
 
 
 /* virtual */
-UsdSchemaType UsdSkelBindingAPI::_GetSchemaType() const {
+UsdSchemaKind UsdSkelBindingAPI::_GetSchemaKind() const {
+    return UsdSkelBindingAPI::schemaKind;
+}
+
+/* virtual */
+UsdSchemaKind UsdSkelBindingAPI::_GetSchemaType() const {
     return UsdSkelBindingAPI::schemaType;
 }
 
@@ -70,8 +75,10 @@ UsdSchemaType UsdSkelBindingAPI::_GetSchemaType() const {
 UsdSkelBindingAPI
 UsdSkelBindingAPI::Apply(const UsdPrim &prim)
 {
-    return UsdAPISchemaBase::_ApplyAPISchema<UsdSkelBindingAPI>(
-            prim, _schemaTokens->SkelBindingAPI);
+    if (prim.ApplyAPI<UsdSkelBindingAPI>()) {
+        return UsdSkelBindingAPI(prim);
+    }
+    return UsdSkelBindingAPI();
 }
 
 /* static */
@@ -395,16 +402,17 @@ UsdSkelBindingAPI::GetSkeleton(UsdSkelSkeleton* skel) const
 
         SdfPathVector targets;
         if (rel.GetForwardedTargets(&targets)) {
+            if (!targets.empty() || rel.HasAuthoredTargets()) {
+                UsdPrim prim = _GetFirstTargetPrimForRel(rel, targets);
+                *skel = UsdSkelSkeleton(prim);
 
-            UsdPrim prim = _GetFirstTargetPrimForRel(rel, targets);
-            *skel = UsdSkelSkeleton(prim);
-
-            if (prim && !*skel) {
-                TF_WARN("%s -- target (<%s>) of relationship is not "
-                        "a Skeleton.", rel.GetPath().GetText(),
-                        prim.GetPath().GetText());
+                if (prim && !*skel) {
+                    TF_WARN("%s -- target (<%s>) of relationship is not "
+                            "a Skeleton.", rel.GetPath().GetText(),
+                            prim.GetPath().GetText());
+                }
+                return true;
             }
-            return true;
         }
     }
     *skel = UsdSkelSkeleton();
@@ -440,17 +448,18 @@ UsdSkelBindingAPI::GetAnimationSource(UsdPrim* prim) const
         
         SdfPathVector targets;
         if (rel.GetForwardedTargets(&targets)) {
+            if (!targets.empty() || rel.HasAuthoredTargets()) {
+                *prim = _GetFirstTargetPrimForRel(rel, targets);
 
-            *prim = _GetFirstTargetPrimForRel(rel, targets);
-            
-            if (*prim && !UsdSkelIsSkelAnimationPrim(*prim)) {
-                TF_WARN("%s -- target (<%s>) of relationship is not a valid "
-                        "skel animation source.",
-                        rel.GetPath().GetText(),
-                        prim->GetPath().GetText());
-                *prim = UsdPrim();
+                if (*prim && !UsdSkelIsSkelAnimationPrim(*prim)) {
+                    TF_WARN("%s -- target (<%s>) of relationship is not a valid "
+                            "skel animation source.",
+                            rel.GetPath().GetText(),
+                            prim->GetPath().GetText());
+                    *prim = UsdPrim();
+                }
+                return true;
             }
-            return true;
         }
     }
     *prim = UsdPrim();

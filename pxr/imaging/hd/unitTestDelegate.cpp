@@ -29,8 +29,6 @@
 #include "pxr/imaging/hd/meshTopology.h"
 #include "pxr/imaging/hd/points.h"
 #include "pxr/imaging/hd/renderDelegate.h"
-#include "pxr/imaging/hd/texture.h"
-#include "pxr/imaging/hd/textureResource.h"
 
 #include "pxr/base/tf/staticTokens.h"
 #include "pxr/base/gf/matrix4f.h"
@@ -101,9 +99,6 @@ HdUnitTestDelegate::AddMesh(SdfPath const &id)
     TfToken scheme = PxOsdOpenSubdivTokens->catmullClark;
 
     AddMesh(id, transform, points, numVerts, verts, guide, instancerId, scheme);
-    if (!instancerId.IsEmpty()) {
-        _instancers[instancerId].prototypes.push_back(id);
-    }
 }
 
 void
@@ -121,16 +116,24 @@ HdUnitTestDelegate::AddMesh(SdfPath const &id,
     HD_TRACE_FUNCTION();
 
     HdRenderIndex& index = GetRenderIndex();
-    index.InsertRprim(HdPrimTypeTokens->mesh, this, id, instancerId);
+    index.InsertRprim(HdPrimTypeTokens->mesh, this, id);
 
     _meshes[id] = _Mesh(scheme, orientation, transform,
-                        points, numVerts, verts, VtIntArray(),
-                        PxOsdSubdivTags(),
-                        VtValue(GfVec3f(1)), HdInterpolationConstant,
-                        VtValue(1.0f), HdInterpolationConstant,
-                        guide, doubleSided);
+                        points, numVerts, verts, /*holes*/VtIntArray(),
+                        PxOsdSubdivTags(), guide, doubleSided);
+    
+    // Add color and opacity as a constant primvar
+    _primvars[id] = { _Primvar(HdTokens->displayColor,
+                               VtValue(GfVec3f(1)),
+                               HdInterpolationConstant,
+                               HdPrimvarRoleTokens->color),
+                      _Primvar(HdTokens->displayOpacity,
+                               VtValue(1.0f),
+                               HdInterpolationConstant,
+                               HdPrimvarRoleTokens->color) };
 
     if (!instancerId.IsEmpty()) {
+        _instancerBindings[id] = instancerId;
         _instancers[instancerId].prototypes.push_back(id);
     }
 }
@@ -156,13 +159,23 @@ HdUnitTestDelegate::AddMesh(SdfPath const &id,
     HD_TRACE_FUNCTION();
 
     HdRenderIndex& index = GetRenderIndex();
-    index.InsertRprim(HdPrimTypeTokens->mesh, this, id, instancerId);
+    index.InsertRprim(HdPrimTypeTokens->mesh, this, id);
 
     _meshes[id] = _Mesh(scheme, orientation, transform,
                         points, numVerts, verts, holes, subdivTags,
-                        color, colorInterpolation, opacity,
-                        opacityInterpolation, guide, doubleSided);
+                        guide, doubleSided);
+
+    _primvars[id] = { _Primvar(HdTokens->displayColor,
+                               color,
+                               colorInterpolation,
+                               HdPrimvarRoleTokens->color),
+                      _Primvar(HdTokens->displayOpacity,
+                               opacity,
+                               opacityInterpolation,
+                               HdPrimvarRoleTokens->color) };
+
     if (!instancerId.IsEmpty()) {
+        _instancerBindings[id] = instancerId;
         _instancers[instancerId].prototypes.push_back(id);
     }
 }
@@ -185,18 +198,36 @@ HdUnitTestDelegate::AddBasisCurves(SdfPath const &id,
     HD_TRACE_FUNCTION();
 
     HdRenderIndex& index = GetRenderIndex();
-    SdfPath materialId;
-    TfMapLookup(_materialBindings, id, &materialId);
-    index.InsertRprim(HdPrimTypeTokens->basisCurves, this, id, instancerId);
+    index.InsertRprim(HdPrimTypeTokens->basisCurves, this, id);
 
     _curves[id] = _Curves(points, curveVertexCounts, 
-                          normals,
                           type,
-                          basis,
-                          color, colorInterpolation,
-                          opacity, opacityInterpolation,
-                          width, widthInterpolation);
+                          basis);
+
+    _primvars[id] = {
+        _Primvar(HdTokens->displayColor,
+                 color,
+                 colorInterpolation,
+                 HdPrimvarRoleTokens->color),
+        _Primvar(HdTokens->displayOpacity,
+                 opacity,
+                 opacityInterpolation,
+                 HdPrimvarRoleTokens->color),
+        _Primvar(HdTokens->widths,
+                 width,
+                 widthInterpolation,
+                 HdPrimvarRoleTokens->none)};
+
+    if (!normals.empty()) {
+        _primvars[id].emplace_back(
+            _Primvar(HdTokens->normals,
+                     VtValue(normals),
+                     HdInterpolationVertex,
+                     HdPrimvarRoleTokens->normal) );
+    }
+
     if (!instancerId.IsEmpty()) {
+        _instancerBindings[id] = instancerId;
         _instancers[instancerId].prototypes.push_back(id);
     }
 }
@@ -215,15 +246,26 @@ HdUnitTestDelegate::AddPoints(SdfPath const &id,
     HD_TRACE_FUNCTION();
 
     HdRenderIndex& index = GetRenderIndex();
-    SdfPath materialId;
-    TfMapLookup(_materialBindings, id, &materialId);
-    index.InsertRprim(HdPrimTypeTokens->points, this, id, instancerId);
+    index.InsertRprim(HdPrimTypeTokens->points, this, id);
 
-    _points[id] = _Points(points,
-                          color, colorInterpolation,
-                          opacity, opacityInterpolation,
-                          width, widthInterpolation);
+    _points[id] = _Points(points);
+
+    _primvars[id] = {
+        _Primvar(HdTokens->displayColor,
+                 color,
+                 colorInterpolation,
+                 HdPrimvarRoleTokens->color),
+        _Primvar(HdTokens->displayOpacity,
+                 opacity,
+                 opacityInterpolation,
+                 HdPrimvarRoleTokens->color),
+        _Primvar(HdTokens->widths,
+                 width,
+                 widthInterpolation,
+                 HdPrimvarRoleTokens->none)};
+
     if (!instancerId.IsEmpty()) {
+        _instancerBindings[id] = instancerId;
         _instancers[instancerId].prototypes.push_back(id);
     }
 }
@@ -237,11 +279,12 @@ HdUnitTestDelegate::AddInstancer(SdfPath const &id,
 
     HdRenderIndex& index = GetRenderIndex();
     // add instancer
-    index.InsertInstancer(this, id, parentId);
+    index.InsertInstancer(this, id);
     _instancers[id] = _Instancer();
     _instancers[id].rootTransform = rootTransform;
 
     if (!parentId.IsEmpty()) {
+        _instancerBindings[id] = parentId;
         _instancers[parentId].prototypes.push_back(id);
     }
 
@@ -275,6 +318,85 @@ HdUnitTestDelegate::SetInstancerProperties(SdfPath const &id,
     HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
     tracker.MarkInstancerDirty(id, HdChangeTracker::DirtyPrimvar |
                                    HdChangeTracker::DirtyInstanceIndex);
+}
+
+void
+HdUnitTestDelegate::UpdateInstancer(SdfPath const& rprimId, 
+                                    SdfPath const& instancerId)
+{
+    if(_meshes.find(rprimId) != _meshes.end()) {
+        if (!instancerId.IsEmpty()) {
+            _instancerBindings[rprimId] = instancerId;
+            _instancers[instancerId].prototypes.push_back(rprimId);
+
+            HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+            tracker.MarkRprimDirty(rprimId, HdChangeTracker::DirtyInstancer);
+        }
+    }
+}
+
+void
+HdUnitTestDelegate::AddPrimvar(SdfPath const& id,
+                               TfToken const& name,
+                               VtValue const& value,
+                               HdInterpolation const& interp,
+                               TfToken const& role)
+{
+    _Primvars::iterator pvIt;
+    if (_FindPrimvar(id, name, &pvIt)) {
+        TF_WARN("Rprim %s already has a primvar named %s. Skipping.\n",
+            id.GetText(), name.GetText());
+        return;
+    }
+
+    _primvars[id].emplace_back(name, value, interp, role);
+    HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+    // XXX: Using DirtyPrimvar even though this is a descriptor change.
+    tracker.MarkRprimDirty(id, HdChangeTracker::DirtyPrimvar);
+}
+
+void
+HdUnitTestDelegate::UpdatePrimvarValue(SdfPath const& id,
+                                       TfToken const& name,
+                                       VtValue const& value)
+{
+    _Primvars::iterator pvIt;
+    if (_FindPrimvar(id, name, &pvIt)) {
+        pvIt->value = value;
+
+        HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+        tracker.MarkRprimDirty(id, HdChangeTracker::DirtyPrimvar);
+    } else {
+        TF_WARN("Rprim %s has no primvar named %s.\n",
+            id.GetText(), name.GetText());
+    }
+}
+
+void
+HdUnitTestDelegate::RemovePrimvar(SdfPath const& id, TfToken const& name)
+{
+    _Primvars::iterator pvIt;
+    if (_FindPrimvar(id, name, &pvIt)) {
+        _primvars[id].erase(pvIt);
+
+        HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+        // XXX: Using DirtyPrimvar even though this is a descriptor change.
+        tracker.MarkRprimDirty(id, HdChangeTracker::DirtyPrimvar);
+    } else {
+        TF_WARN("Rprim %s has no primvar named %s.\n",
+            id.GetText(), name.GetText());
+    }
+}
+
+void
+HdUnitTestDelegate::UpdateTransform(SdfPath const& id,
+                                    GfMatrix4f const& mat)
+{
+    if(_meshes.find(id) != _meshes.end()) {
+        _meshes[id].transform = mat;
+        HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+        tracker.MarkRprimDirty(id, HdChangeTracker::DirtyTransform);
+    }
 }
 
 void 
@@ -343,9 +465,12 @@ void
 HdUnitTestDelegate::SetReprSelector(SdfPath const &id,
                     HdReprSelector const &reprSelector)
 {
-   if (_meshes.find(id) != _meshes.end()) {
-       _meshes[id].reprSelector = reprSelector;
-   }
+    // XXX: Add repr support for curves and points
+    if (_meshes.find(id) != _meshes.end()) {
+        _meshes[id].reprSelector = reprSelector;
+        HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
+        tracker.MarkRprimDirty(id, HdChangeTracker::DirtyRepr);
+    }
 }
 
 void
@@ -398,30 +523,18 @@ HdUnitTestDelegate::UpdateRprims(float time)
     float delta = 0.01f;
     HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
     TF_FOR_ALL (it, _meshes) {
-        tracker.MarkRprimDirty(it->first, HdChangeTracker::DirtyPrimvar);
-        if (it->second.colorInterpolation == HdInterpolationConstant) {
-            GfVec4f color = it->second.color.Get<GfVec4f>();
-            color[0] = fmod(color[0] + delta, 1.0f);
-            color[1] = fmod(color[1] + delta*2, 1.0f);
-            it->second.color = VtValue(color);
-        }
-    }
-}
-
-void
-HdUnitTestDelegate::UpdateCurvePrimvarsInterpMode(float time)
-{
-    // update curve prims to use uniform color
-    HdChangeTracker& tracker = GetRenderIndex().GetChangeTracker();
-    TF_FOR_ALL (it, _curves) {        
-        if (it->second.colorInterpolation != HdInterpolationUniform) {
-            tracker.MarkRprimDirty(it->first, HdChangeTracker::DirtyPrimvar);            
-            // AddCurves adds two basis curve elements
-            GfVec4f colors[] = { GfVec4f(1, 0, 0, 1), GfVec4f(0, 0, 1, 1) };
-            VtValue color = VtValue(_BuildArray(&colors[0], 
-                                         sizeof(colors)/sizeof(colors[0])));
-            it->second.color = VtValue(color);
-            it->second.colorInterpolation = HdInterpolationUniform;
+        SdfPath const& id = it->first;
+        tracker.MarkRprimDirty(id, HdChangeTracker::DirtyPrimvar);
+        
+        // Update constant interp color on each invocation
+        _Primvars::iterator pvIt;
+        if (_FindPrimvar(id, HdTokens->displayColor, &pvIt)) {
+            if (pvIt->interp == HdInterpolationConstant) {
+                GfVec4f color = pvIt->value.Get<GfVec4f>();
+                color[0] = fmod(color[0] + delta, 1.0f);
+                color[1] = fmod(color[1] + delta*2, 1.0f);    
+                pvIt->value = VtValue(color);
+            }
         }
     }
 }
@@ -672,6 +785,15 @@ HdUnitTestDelegate::GetMaterialId(SdfPath const& rprimId)
 }
 
 /*virtual*/
+SdfPath
+HdUnitTestDelegate::GetInstancerId(SdfPath const& primId)
+{
+    SdfPath instancerId;
+    TfMapLookup(_instancerBindings, primId, &instancerId);
+    return instancerId;
+}
+
+/*virtual*/
 VtValue 
 HdUnitTestDelegate::GetMaterialResource(SdfPath const &materialId)
 {
@@ -690,20 +812,6 @@ HdUnitTestDelegate::GetCameraParamValue(SdfPath const &cameraId,
         return _cameras[cameraId].params[paramName];
     } 
     return VtValue();
-}
-
-/*virtual*/
-HdTextureResource::ID
-HdUnitTestDelegate::GetTextureResourceID(SdfPath const& textureId)
-{
-    return SdfPath::Hash()(textureId);
-}
-
-/*virtual*/
-HdTextureResourceSharedPtr
-HdUnitTestDelegate::GetTextureResource(SdfPath const& textureId)
-{
-    return nullptr;
 }
 
 /*virtual*/
@@ -756,7 +864,7 @@ HdUnitTestDelegate::Get(SdfPath const& id, TfToken const& key)
 
     VtValue value;
     if (key == HdTokens->points) {
-        // We could be a mesh or a cuve
+        // Each of the prim types hold onto their points
         if(_meshes.find(id) != _meshes.end()) {
             return VtValue(_meshes[id].points);
         }
@@ -765,37 +873,6 @@ HdUnitTestDelegate::Get(SdfPath const& id, TfToken const& key)
         }
         else if(_points.find(id) != _points.end()) {
             return VtValue(_points[id].points);
-        }
-    } else if (key == HdTokens->normals) {
-        if(_curves.find(id) != _curves.end()) {
-            return VtValue(_curves[id].normals);
-        }
-    } else if (key == HdTokens->displayColor) {
-        if(_meshes.find(id) != _meshes.end()) {
-            return _meshes[id].color;
-        }
-        else if (_curves.find(id) != _curves.end()) {
-            return _curves[id].color;
-        }
-        else if (_points.find(id) != _points.end()) {
-            return _points[id].color;
-        }
-    } else if (key == HdTokens->displayOpacity) {
-        if(_meshes.find(id) != _meshes.end()) {
-            return _meshes[id].opacity;
-        }
-        else if (_curves.find(id) != _curves.end()) {
-            return _curves[id].opacity;
-        }
-        else if (_points.find(id) != _points.end()) {
-            return _points[id].opacity;
-        }
-    } else if (key == HdTokens->widths) {
-        if(_curves.find(id) != _curves.end()) {
-            return _curves[id].width;
-        }
-        else if(_points.find(id) != _points.end()) {
-            return _points[id].width;
         }
     } else if (key == HdInstancerTokens->scale) {
         if (_instancers.find(id) != _instancers.end()) {
@@ -809,7 +886,13 @@ HdUnitTestDelegate::Get(SdfPath const& id, TfToken const& key)
         if (_instancers.find(id) != _instancers.end()) {
             return VtValue(_instancers[id].translate);
         }
-    } 
+    } else {
+        // Check if key is a primvar
+        _Primvars::iterator pvIt;
+        if (_FindPrimvar(id, key, &pvIt)) {
+            value = pvIt->value;
+        }
+    }
     return value;
 }
 
@@ -843,40 +926,15 @@ HdUnitTestDelegate::GetPrimvarDescriptors(SdfPath const& id,
         primvars.emplace_back(HdInstancerTokens->scale, interpolation);
         primvars.emplace_back(HdInstancerTokens->rotate, interpolation);
         primvars.emplace_back(HdInstancerTokens->translate, interpolation);
-    } else if(_meshes.find(id) != _meshes.end()) {
-        if (_meshes[id].colorInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayColor, interpolation,
-                                  HdPrimvarRoleTokens->color);
-        }
-        if (_meshes[id].opacityInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayOpacity, interpolation);
-        }
-    } else if (_curves.find(id) != _curves.end()) {
-        if (_curves[id].colorInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayColor, interpolation,
-                                  HdPrimvarRoleTokens->color);
-        }
-        if (_curves[id].opacityInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayOpacity, interpolation);
-        }
-        if (_curves[id].widthInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->widths, interpolation);
-        }
-        if (_curves[id].normals.size() > 0 &&
-            interpolation == HdInterpolationVertex) {
-            primvars.emplace_back(HdTokens->normals, interpolation,
-                                  HdPrimvarRoleTokens->normal);
-        }
-    } else if (_points.find(id) != _points.end()) {
-        if (_points[id].colorInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayColor, interpolation,
-                                  HdPrimvarRoleTokens->color);
-        }
-        if (_points[id].opacityInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->displayOpacity, interpolation);
-        }
-        if (_points[id].widthInterpolation == interpolation) {
-            primvars.emplace_back(HdTokens->widths, interpolation);
+    }
+
+    auto const cit = _primvars.find(id);
+    if (cit != _primvars.end()) {
+        _Primvars const& pvs = cit->second;
+        for (auto const& pv : pvs) {
+            if (pv.interp == interpolation) {
+                primvars.emplace_back(pv.name, pv.interp, pv.role);
+            }
         }
     }
 
@@ -1053,7 +1111,7 @@ HdUnitTestDelegate::AddGrid(SdfPath const &id, int nx, int ny,
             _BuildArray(&verts[0], verts.size()),
             false,
             instancerId,
-            PxOsdOpenSubdivTokens->catmark,
+            PxOsdOpenSubdivTokens->catmullClark,
             rightHanded ? HdTokens->rightHanded : HdTokens->leftHanded,
             doubleSided);
 }
@@ -1087,7 +1145,7 @@ HdUnitTestDelegate::AddGridWithCustomColor(SdfPath const &id, int nx, int ny,
             HdInterpolationConstant,
             false,
             instancerId,
-            PxOsdOpenSubdivTokens->catmark,
+            PxOsdOpenSubdivTokens->catmullClark,
             rightHanded ? HdTokens->rightHanded : HdTokens->leftHanded,
             doubleSided);
 }
@@ -1125,7 +1183,7 @@ HdUnitTestDelegate::AddGridWithFaceColor(SdfPath const &id, int nx, int ny,
             HdInterpolationConstant,
             false,
             instancerId,
-            PxOsdOpenSubdivTokens->catmark,
+            PxOsdOpenSubdivTokens->catmullClark,
             rightHanded ? HdTokens->rightHanded : HdTokens->leftHanded,
             doubleSided);
 }
@@ -1163,7 +1221,7 @@ HdUnitTestDelegate::AddGridWithVertexColor(SdfPath const &id, int nx, int ny,
             HdInterpolationConstant,
             false,
             instancerId,
-            PxOsdOpenSubdivTokens->catmark,
+            PxOsdOpenSubdivTokens->catmullClark,
             rightHanded ? HdTokens->rightHanded : HdTokens->leftHanded,
             doubleSided);
 }
@@ -1201,7 +1259,7 @@ HdUnitTestDelegate::AddGridWithFaceVaryingColor(SdfPath const &id, int nx, int n
             HdInterpolationConstant,
             false,
             instancerId,
-            PxOsdOpenSubdivTokens->catmark,
+            PxOsdOpenSubdivTokens->catmullClark,
             rightHanded ? HdTokens->rightHanded : HdTokens->leftHanded,
             doubleSided);
 }
@@ -1230,27 +1288,16 @@ HdUnitTestDelegate::AddCurves(
     };
 
     VtVec3fArray authNormals;
-    if (authoredNormals && type == HdTokens->linear){
+    if (authoredNormals) {
         GfVec3f normals[] = {
             GfVec3f(   .0f, -.7f,  .7f ),
             GfVec3f(   .0f,  .0f, 1.0f ),
             GfVec3f(  .0f,  .7f,  .7f ),
             GfVec3f(  .7f,  .7f,  .0f ),
-
             GfVec3f(   .0f,  .0f, 1.0f ),
             GfVec3f(   .0f,  .0f, 1.0f ),
             GfVec3f( -1.0f,  .0f,  .0f ),
             GfVec3f( -1.0f,  .0f,  .0f )
-        };
-        authNormals = _BuildArray(normals, sizeof(normals)/sizeof(normals[0]));
-
-    } else if (authoredNormals && type == HdTokens->cubic){
-        GfVec3f normals[] = {
-            GfVec3f(   .0f,  .0f, 1.0f ),
-            GfVec3f(   .0f,  .7f,  .7f ),
-
-            GfVec3f(   .0f,  .7f, .7f ),
-            GfVec3f(  -.7f,  .7f, .0f )
         };
         authNormals = _BuildArray(normals, sizeof(normals)/sizeof(normals[0]));
     }
@@ -1574,7 +1621,7 @@ HdUnitTestDelegate::PopulateBasicTestSet()
 
         dmat.SetTranslate(GfVec3d(xPos, 0.0, 0.0));
         AddCube(SdfPath("/cube2"), GfMatrix4f(dmat), false, SdfPath(),
-                         PxOsdOpenSubdivTokens->catmark);
+                         PxOsdOpenSubdivTokens->catmullClark);
 
         dmat.SetTranslate(GfVec3d(xPos, 3.0, 0.0));
         AddCube(SdfPath("/cube3"), GfMatrix4f(dmat), false, SdfPath(),
@@ -1587,26 +1634,26 @@ HdUnitTestDelegate::PopulateBasicTestSet()
     {
         dmat.SetTranslate(GfVec3d(xPos, -3.0, 0.0));
         AddCube(SdfPath("/cube4"), GfMatrix4f(dmat), false, SdfPath(),
-                         PxOsdOpenSubdivTokens->catmark);
+                         PxOsdOpenSubdivTokens->catmullClark);
         SetReprSelector(SdfPath("/cube4"),
                 HdReprSelector(HdReprTokens->smoothHull));
 
         dmat.SetTranslate(GfVec3d(xPos, 0.0, 0.0));
         AddCube(SdfPath("/cube5"), GfMatrix4f(dmat), false, SdfPath(),
-                         PxOsdOpenSubdivTokens->catmark);
+                         PxOsdOpenSubdivTokens->catmullClark);
         SetReprSelector(SdfPath("/cube5"),
                 HdReprSelector(HdReprTokens->hull));
 
         dmat.SetTranslate(GfVec3d(xPos, 3.0, 0.0));
         AddCube(SdfPath("/cube6"), GfMatrix4f(dmat), false, SdfPath(),
-                         PxOsdOpenSubdivTokens->catmark);
+                         PxOsdOpenSubdivTokens->catmullClark);
         SetReprSelector(SdfPath("/cube6"),
                 HdReprSelector(HdReprTokens->refined));
         SetRefineLevel(SdfPath("/cube6"), std::max(1, _refineLevel));
 
         dmat.SetTranslate(GfVec3d(xPos, 6.0, 0.0));
         AddCube(SdfPath("/cube7"), GfMatrix4f(dmat), false, SdfPath(),
-                         PxOsdOpenSubdivTokens->catmark);
+                         PxOsdOpenSubdivTokens->catmullClark);
         SetReprSelector(SdfPath("/cube7"),
                 HdReprSelector(HdReprTokens->wireOnSurf));
 
@@ -1678,6 +1725,46 @@ HdUnitTestDelegate::PopulateInvalidPrimsSet()
 
     return GfVec3f(0);
 }
+
+VtValue
+HdUnitTestDelegate::_GetPrimvarValue(SdfPath const& id, TfToken const& name)
+{
+    _Primvars::iterator pvIt;
+    if (_FindPrimvar(id, name, &pvIt)) {
+        return pvIt->value;
+    }
+
+    TF_WARN("Rprim %s has no primvar named %s.\n",
+        id.GetText(), name.GetText());
+    return VtValue();
+}
+
+bool
+HdUnitTestDelegate::_FindPrimvar(SdfPath const& id,
+                                 TfToken const& name,
+                                 _Primvars::iterator *pvIt)
+{
+    auto it = _primvars.find(id);
+    if (it == _primvars.end()) {
+        return false;
+    }
+
+    _Primvars& primvars = it->second;
+
+    HdUnitTestDelegate::_Primvars::iterator it2 =
+        std::find_if(primvars.begin(), primvars.end(),
+            [&name](const _Primvar& x) { return x.name == name; });
+
+    if (it2 == primvars.end()) {
+        return false;
+    }
+
+    if (pvIt) {
+        *pvIt = it2;
+    }
+    return true;
+}
+
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

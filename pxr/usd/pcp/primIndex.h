@@ -38,8 +38,6 @@
 #include "pxr/base/tf/hashmap.h"
 #include "pxr/base/tf/hashset.h"
 
-#include <boost/unordered_map.hpp>
-
 #include <tbb/spin_rw_mutex.h>
 
 #include <functional>
@@ -318,7 +316,8 @@ public:
     /// Returns the node in this object's prim index corresponding to the root
     /// node of \p childOutputs' prim index.
     PcpNodeRef Append(PcpPrimIndexOutputs&& childOutputs,
-                      const PcpArc& arcToParent);
+                      const PcpArc& arcToParent,
+                      PcpErrorBasePtr *error);
 };
 
 /// Free function version for generic code and ADL.

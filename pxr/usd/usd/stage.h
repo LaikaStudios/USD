@@ -40,6 +40,7 @@
 #include "pxr/base/tf/hashmap.h"
 #include "pxr/base/tf/weakBase.h"
 
+#include "pxr/usd/ar/ar.h"
 #include "pxr/usd/sdf/declareHandles.h"
 #include "pxr/usd/sdf/notice.h"
 #include "pxr/usd/sdf/path.h"
@@ -545,8 +546,8 @@ public:
     ///       absolute root). If the given path has no such ancestor, it is an
     ///       error.
     ///     - Specifying a path to an inactive prim is an error.
-    ///     - Specifying a path to a master prim or a prim within a master is an
-    ///       error.
+    ///     - Specifying a path to a prototype prim or a prim within a
+    ///       prototype is an error.
     ///
     /// If an instance prim (or a path identifying a prim descendant to an
     /// instance) is encountered during a Load/Unload operation, these functions
@@ -745,8 +746,8 @@ public:
     /// Return the UsdPrim at \p path, or an invalid UsdPrim if none exists.
     /// 
     /// If \p path indicates a prim beneath an instance, returns an instance
-    /// proxy prim if a prim exists at the corresponding path in that instance's 
-    /// master.
+    /// proxy prim if a prim exists at the corresponding path in that instance's
+    /// prototype.
     ///
     /// Unlike OverridePrim() and DefinePrim(), this method will never author
     /// scene description, and therefore is safe to use as a "reader" in the Usd
@@ -757,9 +758,10 @@ public:
     /// Return the UsdObject at \p path, or an invalid UsdObject if none exists.
     ///
     /// If \p path indicates a prim beneath an instance, returns an instance
-    /// proxy prim if a prim exists at the corresponding path in that instance's 
-    /// master. If \p path indicates a property beneath a child of an instance, 
-    /// returns a property whose parent prim is an instance proxy prim.
+    /// proxy prim if a prim exists at the corresponding path in that instance's
+    /// prototype. If \p path indicates a property beneath a child of an
+    /// instance, returns a property whose parent prim is an instance proxy
+    /// prim.
     ///
     /// Example:
     ///
@@ -780,6 +782,38 @@ public:
     USD_API
     UsdObject GetObjectAtPath(const SdfPath &path) const;
 
+    /// Return the UsdProperty at \p path, or an invalid UsdProperty
+    /// if none exists.
+    ///
+    /// This is equivalent to 
+    /// \code{.cpp}
+    /// stage.GetObjectAtPath(path).As<UsdProperty>();
+    /// \endcode
+    /// \sa GetObjectAtPath(const SdfPath&) const
+    USD_API
+    UsdProperty GetPropertyAtPath(const SdfPath &path) const;
+
+    /// Return the UsdAttribute at \p path, or an invalid UsdAttribute
+    /// if none exists.
+    ///
+    /// This is equivalent to 
+    /// \code{.cpp}
+    /// stage.GetObjectAtPath(path).As<UsdAttribute>();
+    /// \endcode
+    /// \sa GetObjectAtPath(const SdfPath&) const
+    USD_API
+    UsdAttribute GetAttributeAtPath(const SdfPath &path) const;
+
+    /// Return the UsdAttribute at \p path, or an invalid UsdAttribute
+    /// if none exists.
+    ///
+    /// This is equivalent to 
+    /// \code{.cpp}
+    /// stage.GetObjectAtPath(path).As<UsdRelationship>();
+    /// \endcode
+    /// \sa GetObjectAtPath(const SdfPath&) const
+    USD_API
+    UsdRelationship GetRelationshipAtPath(const SdfPath &path) const;
 private:
     // Return the primData object at \p path.
     Usd_PrimDataConstPtr _GetPrimDataAtPath(const SdfPath &path) const;
@@ -787,9 +821,13 @@ private:
 
     // Return the primData object at \p path.  If \p path indicates a prim
     // beneath an instance, return the primData object for the corresponding 
-    // prim in the instance's master.
+    // prim in the instance's prototype.
     Usd_PrimDataConstPtr 
-    _GetPrimDataAtPathOrInMaster(const SdfPath &path) const;
+    _GetPrimDataAtPathOrInPrototype(const SdfPath &path) const;
+
+    /// See documentation on UsdPrim::GetInstances()
+    std::vector<UsdPrim>
+    _GetInstancesForPrototype(const UsdPrim& prototype) const;
 
 public:
 
@@ -1009,12 +1047,19 @@ public:
     /// is as if the muted layer did not exist, which means a composition 
     /// error will be generated.
     ///
-    /// A canonical identifier for \p layerIdentifier will be
+#if AR_VERSION == 1
+    /// A canonical identifier for each layer in \p layersToMute will be
     /// computed using ArResolver::ComputeRepositoryPath.  Any layer 
     /// encountered during composition with the same repository path will
-    /// be considered muted and ignored.  Relative paths will be assumed 
-    /// to be relative to the cache's root layer.  Search paths are immediately 
+    /// be considered muted and ignored.  Relative paths will be assumed to
+    /// be relative to the cache's root layer.  Search paths are immediately 
     /// resolved and the result is used for computing the canonical path.
+#else
+    /// A canonical identifier for each layer in \p layersToMute will be
+    /// computed using ArResolver::CreateIdentifier using the stage's root
+    /// layer as the anchoring asset. Any layer encountered during composition
+    /// with the same identifier will be considered muted and ignored.
+#endif
     ///
     /// Note that muting a layer will cause this stage to release all
     /// references to that layer.  If no other client is holding on to
@@ -1114,9 +1159,9 @@ public:
     ///
     /// Flatten preserves 
     /// \ref Usd_Page_ScenegraphInstancing "scenegraph instancing" by creating 
-    /// independent roots for each master currently composed on this stage, and
-    /// adding a single internal reference arc on each instance prim to its 
-    /// corresponding master.
+    /// independent roots for each prototype currently composed on this stage,
+    /// and adding a single internal reference arc on each instance prim to its 
+    /// corresponding prototype.
     ///
     /// Time samples across sublayer offsets will will have the time offset and
     /// scale applied to each time index.
@@ -1283,6 +1328,27 @@ public:
     bool ClearMetadataByDictKey(
         const TfToken& key, const TfToken& keyPath) const;
 
+    /// Writes the fallback prim types defined in the schema registry to the 
+    /// stage as dictionary valued fallback prim type metadata. If the stage 
+    /// already has fallback prim type metadata, the fallback types from the 
+    /// schema registry will be added to the existing metadata, only for types 
+    /// that are already present in the dictionary, i.e. this won't overwrite 
+    /// existing fallback entries.
+    ///
+    /// The current edit target determines whether the metadata is written to 
+    /// the root layer or the session layer. If the edit target specifies 
+    /// another layer besides these, this will produce an error.
+    ///
+    /// This function can be used at any point before calling Save or Export on 
+    /// a stage to record the fallback types for the current schemas. This 
+    /// allows another version of Usd to open this stage and treat prim types it
+    /// doesn't recognize as a type it does recognize defined for it in this 
+    /// metadata.
+    /// 
+    /// \sa \ref Usd_OM_FallbackPrimTypes UsdSchemaRegistry::GetFallbackPrimTypes
+    USD_API
+    void WriteFallbackPrimTypes();
+
     /// @}
 
     // --------------------------------------------------------------------- //
@@ -1333,9 +1399,16 @@ public:
     /// The timeCodesPerSecond value scales the time ordinate for the samples
     /// contained in the stage to seconds. If timeCodesPerSecond is 24, then a 
     /// sample at time ordinate 24 should be viewed exactly one second after the 
-    /// sample at time ordinate 0. 
+    /// sample at time ordinate 0.
     ///
-    /// The default value of timeCodesPerSecond is 24.
+    /// Like SdfLayer::GetTimeCodesPerSecond, this accessor uses a dynamic
+    /// fallback to framesPerSecond.  The order of precedence is:
+    ///
+    /// \li timeCodesPerSecond from session layer
+    /// \li timeCodesPerSecond from root layer
+    /// \li framesPerSecond from session layer
+    /// \li framesPerSecond from root layer
+    /// \li fallback value of 24
     USD_API
     double GetTimeCodesPerSecond() const;
 
@@ -1517,9 +1590,14 @@ public:
     /// @{
     // --------------------------------------------------------------------- //
 
-    /// Returns all master prims.
+    /// Returns all native instancing prototype prims.
+    /// \deprecated Use UsdStage::GetPrototypes instead.
     USD_API
     std::vector<UsdPrim> GetMasters() const;
+
+    /// Returns all native instancing prototype prims.
+    USD_API
+    std::vector<UsdPrim> GetPrototypes() const;
 
     /// @}
 
@@ -1563,20 +1641,20 @@ private:
     _GetPropertyStack(const UsdProperty &prop, UsdTimeCode time) const;
 
     SdfPropertySpecHandle
-    _GetPropertyDefinition(const UsdPrim &prim, const TfToken &propName) const;
+    _GetSchemaPropertySpec(const UsdPrim &prim, const TfToken &propName) const;
 
     SdfPropertySpecHandle
-    _GetPropertyDefinition(const UsdProperty &prop) const;
+    _GetSchemaPropertySpec(const UsdProperty &prop) const;
 
     template <class PropType>
     SdfHandle<PropType>
-    _GetPropertyDefinition(const UsdProperty &prop) const;
+    _GetSchemaPropertySpec(const UsdProperty &prop) const;
 
     SdfAttributeSpecHandle
-    _GetAttributeDefinition(const UsdAttribute &attr) const;
+    _GetSchemaAttributeSpec(const UsdAttribute &attr) const;
 
     SdfRelationshipSpecHandle
-    _GetRelationshipDefinition(const UsdRelationship &rel) const;
+    _GetSchemaRelationshipSpec(const UsdRelationship &rel) const;
 
     SdfPrimSpecHandle
     _CreatePrimSpecForEditing(const UsdPrim& prim);
@@ -1717,7 +1795,7 @@ private:
 
     // Compose the prim indexes in the subtrees rooted at the paths in 
     // \p primIndexPaths.  If \p instanceChanges is given, returns
-    // changes to masters and instances due to the discovery of new instances
+    // changes to prototypes and instances due to the discovery of new instances
     // during composition.
     void _ComposePrimIndexesInParallel(
         const std::vector<SdfPath>& primIndexPaths,
@@ -1741,7 +1819,7 @@ private:
 
     // Compose subtree rooted at \p prim under \p parent.  This function
     // ensures that the appropriate prim index is specified for \p prim if
-    // \p parent is in a master.
+    // \p parent is in a prototype.
     void _ComposeChildSubtree(Usd_PrimDataPtr prim, 
                               Usd_PrimDataConstPtr parent,
                               UsdStagePopulationMask const *mask);
@@ -1763,6 +1841,10 @@ private:
     // at \p primPath.
     Usd_PrimDataPtr _InstantiatePrim(const SdfPath &primPath);
 
+    // Instantiate a prototype prim and sets its parent to pseudoroot.  
+    // There must not already be a prototype at \p primPath.
+    Usd_PrimDataPtr _InstantiatePrototypePrim(const SdfPath &primPath);
+
     // For \p prim and all of its descendants, remove from _primMap and empty
     // their _children vectors.
     void _DestroyPrim(Usd_PrimDataPtr prim);
@@ -1780,8 +1862,8 @@ private:
     bool _IsObjectDescendantOfInstance(const SdfPath& path) const;
 
     // If the given prim is an instance, returns the corresponding 
-    // master prim.  Otherwise, returns an invalid prim.
-    Usd_PrimDataConstPtr _GetMasterForInstance(Usd_PrimDataConstPtr p) const;
+    // prototype prim.  Otherwise, returns an invalid prim.
+    Usd_PrimDataConstPtr _GetPrototypeForInstance(Usd_PrimDataConstPtr p) const;
 
     // Returns the path of the Usd prim using the prim index at the given path.
     SdfPath _GetPrimPathUsingPrimIndexAtPath(const SdfPath& primIndexPath) const;
@@ -1809,7 +1891,7 @@ private:
     template <class T>
     void _Recompose(const PcpChanges &changes, T *pathsToRecompose);
     template <class T>
-    void _RecomposePrims(const PcpChanges &changes, T *pathsToRecompose);
+    void _RecomposePrims(T *pathsToRecompose);
 
     // Helper for _Recompose to find the subtrees that need to be
     // fully recomposed and to recompose the name children of the
@@ -1818,14 +1900,6 @@ private:
     template <class Iter>
     void _ComputeSubtreesToRecompose(Iter start, Iter finish,
                                      std::vector<Usd_PrimDataPtr>* recompose);
-
-    // Helper for _Recompose to remove master subtrees in \p subtreesToRecompose
-    // that would be composed when an instance subtree in the same container
-    // is composed.
-    template <class PrimIndexPathMap>
-    void _RemoveMasterSubtreesSubsumedByInstances(
-        std::vector<Usd_PrimDataPtr>* subtreesToRecompose,
-        const PrimIndexPathMap& primPathToSourceIndexPathMap) const;
 
     // return true if the path is valid for load/unload operations.
     // This method will emit errors when invalid paths are encountered.
@@ -1853,11 +1927,11 @@ private:
     // Specialized Value Resolution
     // --------------------------------------------------------------------- //
 
-    // Specifier composition is special.  See comments in .cpp in
-    // _ComposeSpecifier. This method returns either the authored specifier or
-    // the fallback value registered in Sdf.
-    SdfSpecifier _GetSpecifier(const UsdPrim &prim) const;
-    SdfSpecifier _GetSpecifier(Usd_PrimDataConstPtr primData) const;
+    // Helpers for resolving values for metadata fields requiring
+    // special behaviors.
+    static SdfSpecifier _GetSpecifier(Usd_PrimDataConstPtr primData);
+    static TfToken _GetKind(Usd_PrimDataConstPtr primData);
+    static bool _IsActive(Usd_PrimDataConstPtr primData);
 
     // Custom is true if it is true anywhere in the stack.
     bool _IsCustom(const UsdProperty &prop) const;
@@ -1950,10 +2024,6 @@ private:
                                           bool useFallbacks,
                                           T* result) const;
 
-    template <class T>
-    bool _GetMetadataImpl(const UsdObject &obj, const TfToken& fieldName, 
-                          T* value) const;
-
     template <class Composer>
     void _GetAttrTypeImpl(const UsdAttribute &attr,
                           const TfToken &fieldName,
@@ -1971,27 +2041,11 @@ private:
                             Composer *composer) const;
 
     template <class Composer>
-    void _GetPrimTypeNameImpl(const UsdPrim &prim,
-                              bool useFallbacks,
-                              Composer *composer) const;
-
-    template <class Composer>
-    bool _GetPrimSpecifierImpl(Usd_PrimDataConstPtr primData,
-                               bool useFallbacks, Composer *composer) const;
-
-    template <class ListOpType, class Composer>
-    bool _GetListOpMetadataImpl(const UsdObject &obj,
-                                const TfToken &fieldName,
-                                bool useFallbacks,
-                                Usd_Resolver *resolver,
-                                Composer *composer) const;
-
-    template <class Composer>
-    bool _GetSpecialMetadataImpl(const UsdObject &obj,
-                                 const TfToken &fieldName,
-                                 const TfToken &keyPath,
-                                 bool useFallbacks,
-                                 Composer *composer) const;
+    bool _GetSpecialPropMetadataImpl(const UsdObject &obj,
+                                     const TfToken &fieldName,
+                                     const TfToken &keyPath,
+                                     bool useFallbacks,
+                                     Composer *composer) const;
     template <class Composer>
     bool _GetMetadataImpl(const UsdObject &obj,
                           const TfToken& fieldName,
@@ -2006,14 +2060,6 @@ private:
                                  bool includeFallbacks,
                                  Composer *composer) const;
 
-    template <class Composer>
-    bool _ComposeGeneralMetadataImpl(const UsdObject &obj,
-                                     const TfToken& fieldName,
-                                     const TfToken& keyPath,
-                                     bool includeFallbacks,
-                                     Usd_Resolver* resolver,
-                                     Composer *composer) const;
-
     // NOTE: The "authoredOnly" flag is not yet in use, but when we have
     // support for prim-based metadata fallbacks, they should be ignored when
     // this flag is set to true.
@@ -2027,13 +2073,6 @@ private:
                          bool useFallbacks,
                          UsdMetadataValueMap* result,
                          bool anchorAssetPathsOnly = false) const;
-
-    template <class Composer>
-    bool
-    _GetFallbackMetadataImpl(const UsdObject &obj,
-                             const TfToken &fieldName,
-                             const TfToken &keyPath,
-                             Composer *composer) const;
 
     // --------------------------------------------------------------------- //
     // Default & TimeSample Resolution
@@ -2163,6 +2202,8 @@ private:
     std::unique_ptr<Usd_ClipCache> _clipCache;
     std::unique_ptr<Usd_InstanceCache> _instanceCache;
 
+    TfHashMap<TfToken, TfToken, TfHash> _invalidPrimTypeToFallbackMap;
+
     // A map from Path to Prim, for fast random access.
     typedef TfHashMap<
         SdfPath, Usd_PrimDataIPtr, SdfPath::Hash> PathToNodeMap;
@@ -2193,6 +2234,7 @@ private:
     UsdStageLoadRules _loadRules;
     
     bool _isClosingStage;
+    bool _isWritingFallbackPrimTypes;
 
     friend class UsdAPISchemaBase;
     friend class UsdAttribute;

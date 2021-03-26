@@ -38,6 +38,9 @@
 #include "pxr/base/tf/declarePtrs.h"
 #include "pxr/base/tf/refBase.h"
 #include "pxr/base/tf/weakBase.h"
+#include "pxr/base/tf/token.h"
+
+#include <memory>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -57,17 +60,22 @@ public:
     GLF_API
     void SetLights(GlfSimpleLightVector const & lights);
     GLF_API
-    GlfSimpleLightVector & GetLights();
+    GlfSimpleLightVector const & GetLights() const;
 
     // returns the effective number of lights taken into account
     // in composable/compatible shader constraints
     GLF_API
     int GetNumLightsUsed() const;
 
+    // returns the number of shadow maps needed, by summing shadow maps
+    // allocated to each light.
+    GLF_API
+    int ComputeNumShadowsUsed() const;
+
     GLF_API
     void SetShadows(GlfSimpleShadowArrayRefPtr const & shadows);
     GLF_API
-    GlfSimpleShadowArrayRefPtr const & GetShadows();
+    GlfSimpleShadowArrayRefPtr const & GetShadows() const;
 
     GLF_API
     void SetMaterial(GlfSimpleMaterial const & material);
@@ -113,11 +121,30 @@ public:
     GLF_API
     void SetStateFromOpenGL();
 
+    /// \name Post Surface Lighting
+    ///
+    /// This context can provide additional shader source, currently
+    /// used to implement post surface lighting, along with a hash
+    /// to help de-duplicate use by client shader programs.
+    ///
+    /// @{
+
+    GLF_API
+    size_t ComputeShaderSourceHash();
+
+    GLF_API
+    std::string const & ComputeShaderSource(TfToken const &shaderStageKey);
+
+    /// @}
+
 protected:
     GLF_API
     GlfSimpleLightingContext();
     GLF_API
     ~GlfSimpleLightingContext();
+
+    void _ComputePostSurfaceShaderState();
+    void _BindPostSurfaceShaderParams(GlfBindingMapPtr const &bindingMap);
 
 private:
     GlfSimpleLightVector _lights;
@@ -138,9 +165,13 @@ private:
     GlfUniformBlockRefPtr _materialUniformBlock;
     GlfUniformBlockRefPtr _bindlessShadowlUniformBlock;
 
+    class _PostSurfaceShaderState;
+    std::unique_ptr<_PostSurfaceShaderState> _postSurfaceShaderState;
+
     bool _lightingUniformBlockValid;
     bool _shadowUniformBlockValid;
     bool _materialUniformBlockValid;
+    bool _postSurfaceShaderStateValid;
 };
 
 

@@ -49,6 +49,15 @@ namespace {
 WRAP_CUSTOM;
 
 
+static std::string
+_Repr(const UsdShadeNodeGraph &self)
+{
+    std::string primRepr = TfPyRepr(self.GetPrim());
+    return TfStringPrintf(
+        "UsdShade.NodeGraph(%s)",
+        primRepr.c_str());
+}
+
 } // anonymous namespace
 
 void wrapUsdShadeNodeGraph()
@@ -82,6 +91,7 @@ void wrapUsdShadeNodeGraph()
         .def(!self)
 
 
+        .def("__repr__", ::_Repr)
     ;
 
     _CustomWrapCode(cls);
@@ -134,6 +144,7 @@ WRAP_CUSTOM {
              (arg("name")))
         .def("GetOutputs",
              &UsdShadeNodeGraph::GetOutputs,
+             (arg("onlyAuthored") = true),
              return_value_policy<TfPySequenceToList>())
         .def("ComputeOutputSource", _WrapComputeOutputSource, 
              (arg("outputName")))
@@ -142,6 +153,7 @@ WRAP_CUSTOM {
              (arg("name"), arg("type")))
         .def("GetInput", &UsdShadeNodeGraph::GetInput, arg("name"))
         .def("GetInputs", &UsdShadeNodeGraph::GetInputs,
+             (arg("onlyAuthored") = true),
              return_value_policy<TfPySequenceToList>())
         .def("GetInterfaceInputs", &UsdShadeNodeGraph::GetInterfaceInputs,
              return_value_policy<TfPySequenceToList>())

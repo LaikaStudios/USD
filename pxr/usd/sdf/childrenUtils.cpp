@@ -79,7 +79,7 @@ _ComputeRenamedPath(const SdfPath &path,
 
 template <class ChildPolicy>
 bool Sdf_ChildrenUtils<ChildPolicy>::CreateSpec(
-    const SdfLayerHandle &layer,
+    SdfLayer *layer,
     const SdfPath &childPath,
     SdfSpecType specType,
     bool inert)
@@ -681,7 +681,7 @@ SdfAllowed Sdf_ChildrenUtils<ChildPolicy>::CanRename(
         // Allow renaming to the same name.
         return true;
     }
-    if (newPath.IsEmpty() || spec.GetLayer()->GetObjectAtPath(newPath)) {
+    if (newPath.IsEmpty() || spec.GetLayer()->HasSpec(newPath)) {
         return SdfAllowed("An object with that name already exists");
     }
     return true;

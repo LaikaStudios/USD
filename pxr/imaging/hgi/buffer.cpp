@@ -25,12 +25,17 @@
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-HgiBuffer::HgiBuffer(HgiBufferDesc const&)
+HgiBuffer::HgiBuffer(HgiBufferDesc const& desc)
+    : _descriptor(desc)
 {
 }
 
-HgiBuffer::~HgiBuffer()
+HgiBuffer::~HgiBuffer() = default;
+
+HgiBufferDesc const&
+HgiBuffer::GetDescriptor() const
 {
+    return _descriptor;
 }
 
 bool operator==(
@@ -40,7 +45,7 @@ bool operator==(
     return lhs.debugName == rhs.debugName &&
            lhs.usage == rhs.usage &&
            lhs.byteSize == rhs.byteSize
-           // Omitted because data ptr should not be held onto
+           // Omitted. Only used tmp during creation of buffer.
            // lhs.initialData == rhs.initialData &&
     ;
 }

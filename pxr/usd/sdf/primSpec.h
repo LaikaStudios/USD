@@ -690,10 +690,17 @@ public:
 
     /// Sets the variant selected for the given variant set.
     /// If \p variantName is empty, then this removes the variant
-    /// selected for the variant set \p variantSetName.
+    /// selection opinion for the variant set \p variantSetName. To 
+    /// explicitly set the variant selection to be empty, use
+    /// BlockVariantSelection instead.
     SDF_API
     void SetVariantSelection(const std::string& variantSetName,
                              const std::string& variantName);
+
+    /// Blocks the variant selected for the given variant set by setting
+    /// the variant selection to empty.
+    SDF_API
+    void BlockVariantSelection(const std::string& variantSetName);
 
     /// @}
     /// \name Relocates
@@ -761,6 +768,19 @@ private:
 SDF_API 
 SdfPrimSpecHandle SdfCreatePrimInLayer(const SdfLayerHandle& layer,
                                        const SdfPath& primPath);
+
+
+/// Convenience function to create a prim at the given path, and any 
+/// necessary parent prims, in the given layer.
+///
+/// If a prim already exists at the given path, do nothing and return true.
+///
+/// Any newly created specs have SdfSpecifierOver and an empty type.  primPath
+/// must be a valid prim path.  Return false and issue an error if we fail to
+/// author the required scene description.
+SDF_API 
+bool SdfJustCreatePrimInLayer(const SdfLayerHandle& layer,
+                              const SdfPath& primPath);
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

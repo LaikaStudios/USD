@@ -1,21 +1,26 @@
 #usda 1.0
 (
     "Test schema file for testUsdSchemaRegistry"
+    subLayers = [
+        @usd/schema.usda@
+    ]
 )
+
 
 def "GLOBAL" (
     customData = {
         string libraryName      = "testUsdSchemaRegistry"
         string libraryPath      = "pxr/usd/usd"
+        bool isDynamic = true
     }
 )
 {
 }
 
-class MetadataTest "MetadataTest" (
+class "AbstractTest" (
+    inherits = </Typed>
     doc = "Testing documentation metadata"
     hidden = true
-    testCustomMetadata = "garply"
 )
 {
     string testAttr = "foo" (
@@ -26,7 +31,15 @@ class MetadataTest "MetadataTest" (
         hidden = True
         testCustomMetadata = "garply"
     )
+}
 
+class MetadataTest "MetadataTest" (
+    inherits = </AbstractTest>
+    doc = "Testing documentation metadata"
+    hidden = true
+    testCustomMetadata = "garply"
+)
+{
     rel testRel (
         displayGroup = "Display Group"
         displayName = "Display Name"

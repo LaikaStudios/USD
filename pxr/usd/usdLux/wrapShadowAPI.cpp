@@ -84,6 +84,15 @@ _CreateShadowFalloffGammaAttr(UsdLuxShadowAPI &self,
         UsdPythonToSdfType(defaultVal, SdfValueTypeNames->Float), writeSparsely);
 }
 
+static std::string
+_Repr(const UsdLuxShadowAPI &self)
+{
+    std::string primRepr = TfPyRepr(self.GetPrim());
+    return TfStringPrintf(
+        "UsdLux.ShadowAPI(%s)",
+        primRepr.c_str());
+}
+
 } // anonymous namespace
 
 void wrapUsdLuxShadowAPI()
@@ -152,6 +161,7 @@ void wrapUsdLuxShadowAPI()
              (arg("defaultValue")=object(),
               arg("writeSparsely")=false))
 
+        .def("__repr__", ::_Repr)
     ;
 
     _CustomWrapCode(cls);
@@ -176,9 +186,29 @@ void wrapUsdLuxShadowAPI()
 // ===================================================================== //
 // --(BEGIN CUSTOM CODE)--
 
+#include "pxr/usd/usdShade/connectableAPI.h"
+
 namespace {
 
 WRAP_CUSTOM {
+    _class
+        .def(init<UsdShadeConnectableAPI>(arg("connectable")))
+        .def("ConnectableAPI", &UsdLuxShadowAPI::ConnectableAPI)
+
+        .def("CreateOutput", &UsdLuxShadowAPI::CreateOutput,
+             (arg("name"), arg("type")))
+        .def("GetOutput", &UsdLuxShadowAPI::GetOutput, arg("name"))
+        .def("GetOutputs", &UsdLuxShadowAPI::GetOutputs,
+             (arg("onlyAuthored")=true),
+             return_value_policy<TfPySequenceToList>())
+
+        .def("CreateInput", &UsdLuxShadowAPI::CreateInput,
+             (arg("name"), arg("type")))
+        .def("GetInput", &UsdLuxShadowAPI::GetInput, arg("name"))
+        .def("GetInputs", &UsdLuxShadowAPI::GetInputs,
+             (arg("onlyAuthored")=true),
+             return_value_policy<TfPySequenceToList>())
+        ;
 }
 
 }

@@ -29,6 +29,7 @@
 #include "pxr/pxr.h"
 #include "pxr/imaging/glf/api.h"
 #include "pxr/imaging/glf/texture.h"
+#include "pxr/imaging/garch/glApi.h"
 
 #include "pxr/base/gf/vec2i.h"
 #include "pxr/base/gf/matrix4d.h"
@@ -36,19 +37,17 @@
 #include "pxr/base/tf/refBase.h"
 #include "pxr/base/tf/weakBase.h"
 
-#include "pxr/imaging/garch/gl.h"
-
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 
-#include <boost/shared_ptr.hpp>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 
 TF_DECLARE_WEAK_AND_REF_PTRS(GlfDrawTarget);
-typedef boost::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
+typedef std::shared_ptr<class GlfGLContext> GlfGLContextSharedPtr;
 
 /// \class GlfDrawTarget
 ///
@@ -110,6 +109,9 @@ public:
 
         /// Returns the GL type of the texture (GL_BYTE, GL_INT, GL_FLOAT...)
         GLenum GetType() const { return _type; }
+
+        /// Returns the GL internalFormat of the texture 
+        GLenum GetInternalFormat() const { return _internalFormat; }
 
         /// Returns the GL attachment point index in the framebuffer.
         int GetAttach() const { return _glIndex; }

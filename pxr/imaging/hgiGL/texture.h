@@ -35,11 +35,19 @@ PXR_NAMESPACE_OPEN_SCOPE
 ///
 /// Represents a OpenGL GPU texture resource.
 ///
-class HgiGLTexture final : public HgiTexture {
+class HgiGLTexture final : public HgiTexture
+{
 public:
     HGIGL_API
-    virtual ~HgiGLTexture();
+    ~HgiGLTexture() override;
 
+    HGIGL_API
+    size_t GetByteSizeOfResource() const override;
+
+    HGIGL_API
+    uint64_t GetRawResource() const override;
+
+    /// Returns the OpenGL id / name of the texture.
     uint32_t GetTextureId() const {return _textureId;}
 
 protected:
@@ -47,6 +55,9 @@ protected:
 
     HGIGL_API
     HgiGLTexture(HgiTextureDesc const & desc);
+
+    HGIGL_API
+    HgiGLTexture(HgiTextureViewDesc const & desc);
 
 private:
     HgiGLTexture() = delete;

@@ -566,6 +566,51 @@ class TestUsdGeomXformable(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             xformOp = x.AddTransformOp(precision=UsdGeom.XformOp.PrecisionFloat)
 
+        # Test Validity of XformOp with no attr
+        xformOp = UsdGeom.XformOp(Usd.Attribute())
+        self.assertFalse(xformOp.IsDefined())
+        self.assertFalse(bool(xformOp))
+
+    # Test TypeToken to TypeEnum mapping
+    def test_XformOpTypes(self):
+        typeEnums = [
+                UsdGeom.XformOp.TypeScale,
+                UsdGeom.XformOp.TypeInvalid,
+                UsdGeom.XformOp.TypeTranslate,
+                UsdGeom.XformOp.TypeRotateZ,
+                UsdGeom.XformOp.TypeRotateX,
+                UsdGeom.XformOp.TypeRotateY,
+                UsdGeom.XformOp.TypeRotateZYX,
+                UsdGeom.XformOp.TypeRotateXYZ,
+                UsdGeom.XformOp.TypeRotateXZY,
+                UsdGeom.XformOp.TypeRotateYXZ,
+                UsdGeom.XformOp.TypeRotateYZX,
+                UsdGeom.XformOp.TypeRotateZXY,
+                UsdGeom.XformOp.TypeTransform,
+                UsdGeom.XformOp.TypeOrient
+                ]
+        typeTokens = [
+                'scale',
+                '',
+                'translate',
+                'rotateZ',
+                'rotateX',
+                'rotateY',
+                'rotateZYX',
+                'rotateXYZ',
+                'rotateXZY',
+                'rotateYXZ',
+                'rotateYZX',
+                'rotateZXY',
+                'transform',
+                'orient'
+                ]
+        for index in range(len(typeEnums)):
+            testEnum = UsdGeom.XformOp.GetOpTypeEnum(typeTokens[index])
+            self.assertEqual(testEnum, typeEnums[index])
+            testToken = UsdGeom.XformOp.GetOpTypeToken(typeEnums[index])
+            self.assertEqual(testToken, typeTokens[index])
+
     def test_MightBeTimeVarying(self):
         s = Usd.Stage.CreateInMemory()
         x = UsdGeom.Xform.Define(s, '/World')
@@ -672,6 +717,28 @@ class TestUsdGeomXformable(unittest.TestCase):
             p.IsActive()
         # It should still be safe to get the path, but the path will be empty.
         self.assertEqual(xf.GetPath(), Sdf.Path())
+
+    def test_XformOpOperators(self):
+        s = Usd.Stage.CreateInMemory()
+        rootXform = UsdGeom.Xform.Define(s, "/Root")
+        translateOp = rootXform.AddTranslateOp()
+        scaleOp = rootXform.AddScaleOp()
+        self.assertFalse(UsdGeom.XformOp())
+        self.assertTrue(translateOp)
+        self.assertTrue(scaleOp)
+        xformOps = rootXform.GetOrderedXformOps()
+        self.assertEqual(xformOps, [translateOp, scaleOp])
+        xformOps.remove(translateOp)
+        self.assertEqual(xformOps, [scaleOp])
+
+    def test_ImplicitConversions(self):
+        """Ensure that we can pass XformOps to methods that accept Properties"""
+        s = Usd.Stage.CreateInMemory()
+        rootXform1 = UsdGeom.Xform.Define(s, "/Root")
+        rootXform2 = UsdGeom.Xform.Define(s, "/Root2")
+        translateOp1 = rootXform1.AddTranslateOp()
+        translateOp2 = rootXform2.AddTranslateOp()
+        translateOp1.GetAttr().FlattenTo(translateOp2)
 
 if __name__ == "__main__":
     unittest.main()

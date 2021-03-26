@@ -29,7 +29,6 @@
 #include "pxr/usd/usdShade/utils.h"
 
 #include "pxr/usd/sdf/schema.h"
-#include "pxr/usd/usd/relationship.h"
 
 #include "pxr/usd/usdShade/connectableAPI.h"
 
@@ -48,17 +47,7 @@ TF_DEFINE_PRIVATE_TOKENS(
 );
 
 UsdShadeOutput::UsdShadeOutput(const UsdAttribute &attr)
-    : _prop(attr)
-{
-}
-
-UsdShadeOutput::UsdShadeOutput(const UsdRelationship &rel)
-    : _prop(rel)
-{
-}
-
-UsdShadeOutput::UsdShadeOutput(const UsdProperty &prop)
-    : _prop(prop)
+    : _attr(attr)
 {
 }
 
@@ -72,12 +61,7 @@ UsdShadeOutput::GetBaseName() const
 SdfValueTypeName 
 UsdShadeOutput::GetTypeName() const
 { 
-    if (UsdAttribute attr = GetAttr()) {
-        return  attr.GetTypeName();
-    }
-
-    // Fallback to token for outputs that represent terninals.
-    return SdfValueTypeNames->Token;
+    return _attr.GetTypeName();
 }
 
 static TfToken
@@ -93,9 +77,9 @@ UsdShadeOutput::UsdShadeOutput(
 {
     // XXX what do we do if the type name doesn't match and it exists already?
     TfToken attrName = _GetOutputAttrName(name);
-    _prop = prim.GetAttribute(attrName);
-    if (!_prop) {
-        _prop = prim.CreateAttribute(attrName, typeName, /* custom = */ false);
+    _attr = prim.GetAttribute(attrName);
+    if (!_attr) {
+        _attr = prim.CreateAttribute(attrName, typeName, /* custom = */ false);
     }
 }
 
@@ -113,21 +97,21 @@ bool
 UsdShadeOutput::SetRenderType(
         TfToken const& renderType) const
 {
-    return _prop.SetMetadata(_tokens->renderType, renderType);
+    return _attr.SetMetadata(_tokens->renderType, renderType);
 }
 
 TfToken 
 UsdShadeOutput::GetRenderType() const
 {
     TfToken renderType;
-    _prop.GetMetadata(_tokens->renderType, &renderType);
+    _attr.GetMetadata(_tokens->renderType, &renderType);
     return renderType;
 }
 
 bool 
 UsdShadeOutput::HasRenderType() const
 {
-    return _prop.HasMetadata(_tokens->renderType);
+    return _attr.HasMetadata(_tokens->renderType);
 }
 
 NdrTokenMap
@@ -219,6 +203,14 @@ UsdShadeOutput::CanConnect(const UsdShadeOutput &sourceOutput) const
     return CanConnect(sourceOutput.GetAttr());
 }
 
+bool
+UsdShadeOutput::ConnectToSource(
+    UsdShadeConnectionSourceInfo const &source,
+    ConnectionModification const mod) const
+{
+    return UsdShadeConnectableAPI::ConnectToSource(*this, source, mod);
+}
+
 bool 
 UsdShadeOutput::ConnectToSource(
     UsdShadeConnectableAPI const &source, 
@@ -226,8 +218,8 @@ UsdShadeOutput::ConnectToSource(
     UsdShadeAttributeType const sourceType,
     SdfValueTypeName typeName) const 
 {
-    return UsdShadeConnectableAPI::ConnectToSource(*this, source, 
-        sourceName, sourceType, typeName);   
+    return UsdShadeConnectableAPI::ConnectToSource(*this, source,
+        sourceName, sourceType, typeName);
 }
 
 bool 
@@ -246,6 +238,20 @@ bool
 UsdShadeOutput::ConnectToSource(UsdShadeOutput const &sourceOutput) const 
 {
     return UsdShadeConnectableAPI::ConnectToSource(*this, sourceOutput);
+}
+
+bool
+UsdShadeOutput::SetConnectedSources(
+    std::vector<UsdShadeConnectionSourceInfo> const &sourceInfos) const
+{
+    return UsdShadeConnectableAPI::SetConnectedSources(*this, sourceInfos);
+}
+
+UsdShadeOutput::SourceInfoVector
+UsdShadeOutput::GetConnectedSources(SdfPathVector *invalidSourcePaths) const
+{
+    return UsdShadeConnectableAPI::GetConnectedSources(*this,
+                                                       invalidSourcePaths);
 }
 
 bool 
@@ -278,15 +284,29 @@ UsdShadeOutput::IsSourceConnectionFromBaseMaterial() const
 }
 
 bool 
-UsdShadeOutput::DisconnectSource() const
+UsdShadeOutput::DisconnectSource(UsdAttribute const &sourceAttr) const
 {
-    return UsdShadeConnectableAPI::DisconnectSource(*this);
+    return UsdShadeConnectableAPI::DisconnectSource(*this, sourceAttr);
+}
+
+bool
+UsdShadeOutput::ClearSources() const
+{
+    return UsdShadeConnectableAPI::ClearSources(*this);
 }
 
 bool 
-UsdShadeOutput::ClearSource() const
+UsdShadeOutput::ClearSource() const 
 {
-    return UsdShadeConnectableAPI::ClearSource(*this);
+    return UsdShadeConnectableAPI::ClearSources(*this);
+}
+
+UsdShadeAttributeVector
+UsdShadeOutput::GetValueProducingAttributes(
+    bool shaderOutputsOnly) const
+{
+    return UsdShadeUtils::GetValueProducingAttributes(*this,
+                                                      shaderOutputsOnly);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

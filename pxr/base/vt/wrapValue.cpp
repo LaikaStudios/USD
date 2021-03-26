@@ -33,6 +33,7 @@
 
 #include "pxr/base/arch/demangle.h"
 #include "pxr/base/arch/inttypes.h"
+#include "pxr/base/tf/py3Compat.h"
 #include "pxr/base/tf/pyContainerConversions.h"
 #include "pxr/base/tf/pyFunction.h"
 #include "pxr/base/tf/pyResultConversions.h"
@@ -177,12 +178,15 @@ struct Vt_ValueFromPython {
         }
         if (PyBool_Check(obj_ptr)) {
             // Python bool -> C++ bool.
-            new (storage) VtValue(bool(PyInt_AS_LONG(obj_ptr)));
+            new (storage) VtValue(bool(TfPyInt_AS_LONG(obj_ptr)));
             data->convertible = storage;
             return;
         }
+#if PY_MAJOR_VERSION == 2
         if (PyInt_Check(obj_ptr)) {
             // Python int -> either c++ int or long depending on range.
+            // In Python 3 it will always be a long, so we want to be sure
+            // we fall into the "long" clause below
             long val = PyInt_AS_LONG(obj_ptr);
             if (std::numeric_limits<int>::min() <= val && 
                 val <= std::numeric_limits<int>::max()) {
@@ -193,6 +197,7 @@ struct Vt_ValueFromPython {
             data->convertible = storage;
             return;
         }
+#endif
         if (PyLong_Check(obj_ptr)) {
             // Python long -> either c++ int or long or unsigned long or long
             // long or unsigned long long or fail, depending on range.
@@ -228,7 +233,7 @@ struct Vt_ValueFromPython {
             data->convertible = storage;
             return;
         }
-        if (PyString_Check(obj_ptr) || PyUnicode_Check(obj_ptr)) {
+        if (TfPyString_Check(obj_ptr) || PyUnicode_Check(obj_ptr)) {
             // Py string or unicode -> std::string.
             new (storage) VtValue(std::string(extract<std::string>(obj_ptr)));
             data->convertible = storage;
@@ -300,6 +305,11 @@ void wrapValue()
         TfStringPrintf(funcDocString, "Float","float","float").c_str());
     def("Double", Vt_ValueWrapper::Create<double>, 
         TfStringPrintf(funcDocString, "Double","double","double").c_str());
+
+    // Since strings and tokens are indistiguishable in Python-land, users need to
+    // manually declare when they want a VtValue with a token
+    def("Token", Vt_ValueWrapper::Create<TfToken>,
+        TfStringPrintf(funcDocString, "TfToken","TfToken","TfToken").c_str());
 
     // Register conversions for VtValue from python, but first make sure that
     // nobody's registered anything before us.

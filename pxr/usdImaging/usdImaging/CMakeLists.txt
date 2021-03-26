@@ -29,10 +29,9 @@ pxr_library(usdImaging
         debugCodes
         delegate
         indexProxy
-        inheritedCache
+        resolvedAttributeCache
         instancerContext
         tokens
-        valueCache
         basisCurvesAdapter
         capsuleAdapter
         cameraAdapter
@@ -46,6 +45,7 @@ pxr_library(usdImaging
         domeLightAdapter
         fieldAdapter
         gprimAdapter
+        hermiteCurvesAdapter
         implicitSurfaceMeshUtils
         instanceAdapter
         lightAdapter
@@ -54,14 +54,20 @@ pxr_library(usdImaging
         meshAdapter
         nurbsCurvesAdapter
         nurbsPatchAdapter
+        pluginLightAdapter
+        pluginLightFilterAdapter
         pointsAdapter
         pointInstancerAdapter
         primAdapter
+        primvarDescCache
         rectLightAdapter
         sphereAdapter
         sphereLightAdapter
         textureUtils
         volumeAdapter
+
+    PRIVATE_CLASSES
+        materialParamUtils
 
     PUBLIC_HEADERS
         api.h

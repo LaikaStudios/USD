@@ -238,6 +238,20 @@ HdSceneDelegate::GetInstancerTransform(SdfPath const &instancerId)
 }
 
 /*virtual*/
+SdfPath
+HdSceneDelegate::GetInstancerId(SdfPath const& primId)
+{
+    return SdfPath();
+}
+
+/*virtual*/
+SdfPathVector
+HdSceneDelegate::GetInstancerPrototypes(SdfPath const& instancerId)
+{
+    return SdfPathVector();
+}
+
+/*virtual*/
 size_t
 HdSceneDelegate::SampleInstancerTransform(SdfPath const &instancerId,
                                           size_t maxSampleCount,
@@ -254,13 +268,11 @@ HdSceneDelegate::SampleInstancerTransform(SdfPath const &instancerId,
 
 /*virtual*/
 SdfPath
-HdSceneDelegate::GetPathForInstanceIndex(const SdfPath &protoRprimId,
-                                         int protoIndex,
-                                         int *instancerIndex,
-                                         SdfPath *masterCachePath,
-                                         SdfPathVector *instanceContext)
+HdSceneDelegate::GetScenePrimPath(SdfPath const& rprimId,
+                                  int instanceIndex,
+                                  HdInstancerContext *instancerContext)
 {
-    return SdfPath();
+    return rprimId.ReplacePrefix(_delegateID, SdfPath::AbsoluteRootPath());
 }
 
 
@@ -281,24 +293,6 @@ VtValue
 HdSceneDelegate::GetMaterialResource(SdfPath const &materialId)
 {
     return VtValue();
-}
-
-// -----------------------------------------------------------------------//
-/// \name Texture Aspects
-// -----------------------------------------------------------------------//
-
-/*virtual*/
-HdTextureResource::ID
-HdSceneDelegate::GetTextureResourceID(SdfPath const& textureId)
-{
-    return HdTextureResource::ID();
-}
-
-/*virtual*/
-HdTextureResourceSharedPtr
-HdSceneDelegate::GetTextureResource(SdfPath const& textureId)
-{
-    return HdTextureResourceSharedPtr();
 }
 
 // -----------------------------------------------------------------------//
@@ -409,6 +403,22 @@ HdSceneDelegate::GetExtComputationInput(SdfPath const& computationId,
                                         TfToken const& input)
 {
     return VtValue();
+}
+
+/*virtual*/
+size_t
+HdSceneDelegate::SampleExtComputationInput(SdfPath const& computationId,
+                                           TfToken const& input,
+                                           size_t maxSampleCount,
+                                           float *sampleTimes,
+                                           VtValue *sampleValues)
+{
+    if (maxSampleCount > 0) {
+        sampleTimes[0] = 0.0;
+        sampleValues[0] = GetExtComputationInput(computationId, input);
+        return 1;
+    }
+    return 0;
 }
 
 /*virtual*/

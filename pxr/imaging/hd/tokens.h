@@ -57,6 +57,7 @@ PXR_NAMESPACE_OPEN_SCOPE
     (drawingCoord1)                             \
     (drawingCoord2)                             \
     (drawingCoordI)                             \
+    (drivers)                                   \
     (edgeIndices)                               \
     (elementCount)                              \
     (elementsVisibility)                        \
@@ -81,6 +82,7 @@ PXR_NAMESPACE_OPEN_SCOPE
     (params)                                    \
     (patchParam)                                \
     (periodic)                                  \
+    (pinned)                                    \
     (points)                                    \
     (pointsIndices)                             \
     (power)                                     \
@@ -133,7 +135,7 @@ PXR_NAMESPACE_OPEN_SCOPE
     (adjacencyBufSize)                          \
     (basisCurvesTopology)                       \
     (bufferSourcesResolved)                     \
-    (bufferArrayRangeMerged)                    \
+    (bufferArrayRangeMigrated)                    \
     (bufferArrayRangeContainerResized)          \
     (collectionsRefreshed)                      \
     (computationsCommited)                      \
@@ -145,8 +147,6 @@ PXR_NAMESPACE_OPEN_SCOPE
     (garbageCollectedSsbo)                      \
     (garbageCollectedUbo)                       \
     (garbageCollectedVbo)                       \
-    (glBufferSubData)                           \
-    (glCopyBufferSubData)                       \
     (gpuMemoryUsed)                             \
     (instBasisCurvesTopology)                   \
     (instBasisCurvesTopologyRange)              \
@@ -168,7 +168,6 @@ PXR_NAMESPACE_OPEN_SCOPE
     (skipInvisibleRprimSync)                    \
     (subdivisionRefineCPU)                      \
     (subdivisionRefineGPU)                      \
-    (textureResourceMemory)                     \
     (textureMemory)                             \
     (triangulateFaceVarying)                    \
     (uboSize)                                   \
@@ -211,7 +210,9 @@ PXR_NAMESPACE_OPEN_SCOPE
 #define HD_MATERIAL_TERMINAL_TOKENS             \
     (surface)                                   \
     (displacement)                              \
-    (volume)
+    (volume)                                    \
+    (light)                                     \
+    (lightFilter)
 
 #define HD_RENDERTAG_TOKENS                     \
     (geometry)                                  \
@@ -242,13 +243,13 @@ PXR_NAMESPACE_OPEN_SCOPE
     (distantLight)                              \
     (domeLight)                                 \
     (lightFilter)                               \
+    (pluginLight)                               \
     (rectLight)                                 \
     (sphereLight)                               \
     /* Sprims ExtComputations */                \
     (extComputation)                            \
                                                 \
     /* Bprims */                                \
-    (texture)                                   \
     (renderBuffer)
 
 #define HD_PRIMVAR_ROLE_TOKENS                  \
@@ -347,7 +348,8 @@ TfToken HdAovTokensMakeShader(TfToken const& shader);
     (threadLimit)
 
 #define HD_RESOURCE_TYPE_TOKENS                       \
-    (texture)                        
+    (texture)                                         \
+    (shaderFile)
 
 TF_DECLARE_PUBLIC_TOKENS(HdTokens, HD_API, HD_TOKENS);
 TF_DECLARE_PUBLIC_TOKENS(HdInstancerTokens, HD_API, HD_INSTANCER_TOKENS);

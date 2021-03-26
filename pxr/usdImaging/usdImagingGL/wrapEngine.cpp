@@ -49,42 +49,37 @@ _TestIntersection(
     UsdImagingGLEngine & self, 
     const GfMatrix4d &viewMatrix,
     const GfMatrix4d &projectionMatrix,
-    const GfMatrix4d &worldToLocalSpace,
     const UsdPrim& root, 
     UsdImagingGLRenderParams params)
 {
     GfVec3d hitPoint;
+    GfVec3d hitNormal;
     SdfPath hitPrimPath;
     SdfPath hitInstancerPath;
     int hitInstanceIndex;
-    int hitElementIndex;
+    HdInstancerContext hitInstancerContext;
 
     self.TestIntersection(
         viewMatrix,
         projectionMatrix,
-        worldToLocalSpace,
         root,
         params,
         &hitPoint,
+        &hitNormal,
         &hitPrimPath,
         &hitInstancerPath,
         &hitInstanceIndex,
-        &hitElementIndex);
+        &hitInstancerContext);
 
-    return boost::python::make_tuple(hitPoint, hitPrimPath, hitInstancerPath, hitInstanceIndex, hitElementIndex);
-}
+    SdfPath topLevelPath = SdfPath::EmptyPath();
+    int topLevelInstanceIndex = -1;
+    if (hitInstancerContext.size() > 0) {
+        topLevelPath = hitInstancerContext[0].first;
+        topLevelInstanceIndex = hitInstancerContext[0].second;
+    }
 
-static boost::python::tuple
-_GetPrimPathFromInstanceIndex(
-    UsdImagingGLEngine & self,
-    const SdfPath& protoPrimPath,
-    int instanceIndex)
-{
-    int absoluteInstanceIndex = 0;
-    SdfPath path = self.GetPrimPathFromInstanceIndex(protoPrimPath,
-                                                     instanceIndex,
-                                                     &absoluteInstanceIndex);
-    return boost::python::make_tuple(path, absoluteInstanceIndex);
+    return boost::python::make_tuple(hitPoint, hitNormal, hitPrimPath,
+            hitInstanceIndex, topLevelPath, topLevelInstanceIndex);
 }
 
 static void
@@ -94,6 +89,17 @@ _SetLightingState(UsdImagingGLEngine &self, GlfSimpleLightVector const &lights,
     self.SetLightingState(lights, material, sceneAmbient);
 }
 
+void _SetOverrideWindowPolicy(UsdImagingGLEngine & self,
+                              const object &pyObj)
+{
+    extract<CameraUtilConformWindowPolicy> extractor(pyObj);
+    if (extractor.check()) {
+        self.SetOverrideWindowPolicy({true, extractor()});
+    } else {
+        self.SetOverrideWindowPolicy({false, CameraUtilFit});
+    }
+}
+    
 } // anonymous namespace 
 
 void wrapEngine()
@@ -118,9 +124,6 @@ void wrapEngine()
             .def("ClearSelected", &UsdImagingGLEngine::ClearSelected)
             .def("AddSelected", &UsdImagingGLEngine::AddSelected)
             .def("SetSelectionColor", &UsdImagingGLEngine::SetSelectionColor)
-            .def("GetRprimPathFromPrimId", 
-                    &UsdImagingGLEngine::GetRprimPathFromPrimId)
-            .def("GetPrimPathFromInstanceIndex", &_GetPrimPathFromInstanceIndex)
             .def("TestIntersection", &_TestIntersection)
             .def("IsHydraEnabled", &UsdImagingGLEngine::IsHydraEnabled)
                 .staticmethod("IsHydraEnabled")
@@ -160,6 +163,9 @@ void wrapEngine()
                 &UsdImagingGLEngine::IsStopRendererSupported)
             .def("StopRenderer", &UsdImagingGLEngine::StopRenderer)
             .def("RestartRenderer", &UsdImagingGLEngine::RestartRenderer)
+            .def("SetRenderBufferSize", &UsdImagingGLEngine::SetRenderBufferSize)
+            .def("SetFraming", &UsdImagingGLEngine::SetFraming)
+            .def("SetOverrideWindowPolicy", _SetOverrideWindowPolicy)
         ;
 
     }

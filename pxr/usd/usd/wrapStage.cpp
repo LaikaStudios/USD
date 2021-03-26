@@ -22,6 +22,9 @@
 // language governing permissions and limitations under the Apache License.
 //
 #include "pxr/pxr.h"
+#include "pxr/usd/usd/attribute.h"
+#include "pxr/usd/usd/property.h"
+#include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usd/primRange.h"
 
@@ -86,6 +89,10 @@ _ExportToString(const UsdStagePtr &self, bool addSourceFileComment=true)
 static string
 __repr__(const UsdStagePtr &self)
 {
+    if (self.IsExpired()) {
+        return "invalid " + UsdDescribe(self);
+    }
+    
     string result = TF_PY_REPR_PREFIX + TfStringPrintf(
         "Stage.Open(rootLayer=%s, sessionLayer=%s",
         TfPyRepr(self->GetRootLayer()).c_str(),
@@ -166,10 +173,10 @@ _ExpandPopulationMask(UsdStage &self,
     using AttrPredicate = std::function<bool (UsdAttribute const &)>;
     RelPredicate relPred;
     AttrPredicate attrPred;
-    if (pyRelPred != boost::python::object()) {
+    if (!pyRelPred.is_none()) {
         relPred = boost::python::extract<RelPredicate>(pyRelPred);
     }
-    if (pyAttrPred != boost::python::object()) {
+    if (!pyAttrPred.is_none()) {
         attrPred = boost::python::extract<AttrPredicate>(pyAttrPred);
     }
     return self.ExpandPopulationMask(relPred, attrPred);
@@ -395,6 +402,7 @@ void wrapUsdStage()
 
         .def("Save", &UsdStage::Save)
         .def("SaveSessionLayers", &UsdStage::SaveSessionLayers)
+        .def("WriteFallbackPrimTypes", &UsdStage::WriteFallbackPrimTypes)
 
         .def("GetGlobalVariantFallbacks",
              &UsdStage::GetGlobalVariantFallbacks,
@@ -440,6 +448,9 @@ void wrapUsdStage()
 
         .def("GetPrimAtPath", &UsdStage::GetPrimAtPath, arg("path"))
         .def("GetObjectAtPath", &UsdStage::GetObjectAtPath, arg("path"))
+        .def("GetPropertyAtPath", &UsdStage::GetPropertyAtPath, arg("path"))
+        .def("GetAttributeAtPath", &UsdStage::GetAttributeAtPath, arg("path"))
+        .def("GetRelationshipAtPath", &UsdStage::GetRelationshipAtPath, arg("path"))
         .def("Traverse", (UsdPrimRange (UsdStage::*)())
              &UsdStage::Traverse)
         .def("Traverse",
@@ -546,6 +557,8 @@ void wrapUsdStage()
         .staticmethod("IsSupportedFile")
 
         .def("GetMasters", &UsdStage::GetMasters,
+             return_value_policy<TfPySequenceToList>())
+        .def("GetPrototypes", &UsdStage::GetPrototypes,
              return_value_policy<TfPySequenceToList>())
 
         .def("_GetPcpCache", &Usd_PcpCacheAccess::GetPcpCache,

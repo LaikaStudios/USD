@@ -22,6 +22,8 @@
 # KIND, either express or implied. See the Apache License for the specific
 # language governing permissions and limitations under the Apache License.
 
+from __future__ import print_function
+
 import sys, unittest
 from pxr import Sdf,Usd,Tf
 
@@ -38,6 +40,10 @@ class TestUsdPrim(unittest.TestCase):
             assert hash(p) == hash(q)
 
             # Check that unicode objects convert to sdfpaths.
+            #
+            # In python 3 all strings are unicode, but we want to keep these
+            # explicit unicode strings so we don't lose coverage in python 2
+            # tests.
             p = s.GetPrimAtPath(u'/')
             q = s.GetPrimAtPath(u'/')
             assert p is not q
@@ -175,38 +181,42 @@ class TestUsdPrim(unittest.TestCase):
             globalClass, pureOver, group, propertyOrder])
         self.assertEqual(list(root.GetChildren()), [propertyOrder])
 
+        def _TestFilteredChildren(predicate, expectedChildren):
+            self.assertEqual(list(root.GetFilteredChildren(predicate)), 
+                             expectedChildren)
+            self.assertEqual(list(root.GetFilteredChildrenNames(predicate)), 
+                             [c.GetName() for c in expectedChildren])
+
         # Manually construct the "normal" view using the default predicate.
-        self.assertEqual(list(root.GetFilteredChildren(
-            Usd.PrimDefaultPredicate)), [propertyOrder])
+        _TestFilteredChildren(Usd.PrimDefaultPredicate, [propertyOrder])
 
         # Manually construct the "normal" view using the individual terms
         # from the default predicate.
-        self.assertEqual(list(root.GetFilteredChildren(
+        _TestFilteredChildren(
             Usd.PrimIsActive & Usd.PrimIsLoaded &
-            Usd.PrimIsDefined & ~Usd.PrimIsAbstract)), [propertyOrder])
+            Usd.PrimIsDefined & ~Usd.PrimIsAbstract, [propertyOrder])
 
         # Only abstract prims.
-        self.assertEqual(list(root.GetFilteredChildren(Usd.PrimIsAbstract)),
-                    [globalClass])
+        _TestFilteredChildren(Usd.PrimIsAbstract, [globalClass])
 
         # Abstract & defined prims -- still just the class.
-        self.assertEqual(list(root.GetFilteredChildren(
-            Usd.PrimIsAbstract & Usd.PrimIsDefined)), [globalClass])
+        _TestFilteredChildren(
+            Usd.PrimIsAbstract & Usd.PrimIsDefined, [globalClass])
 
         # Abstract | unloaded prims -- the class and the group.
-        self.assertEqual(list(root.GetFilteredChildren(
-            Usd.PrimIsAbstract | ~Usd.PrimIsLoaded)), [globalClass, group])
+        _TestFilteredChildren(
+            Usd.PrimIsAbstract | ~Usd.PrimIsLoaded, [globalClass, group])
 
         # Models only.
-        self.assertEqual(list(root.GetFilteredChildren(Usd.PrimIsModel)), [group])
+        _TestFilteredChildren(Usd.PrimIsModel, [group])
 
         # Non-models only.
-        self.assertEqual(list(root.GetFilteredChildren(~Usd.PrimIsModel)),
+        _TestFilteredChildren(~Usd.PrimIsModel,
                     [globalClass, pureOver, propertyOrder])
 
         # Models or undefined.
-        self.assertEqual(list(root.GetFilteredChildren(
-            Usd.PrimIsModel | ~Usd.PrimIsDefined)), [pureOver, group])
+        _TestFilteredChildren(
+            Usd.PrimIsModel | ~Usd.PrimIsDefined, [pureOver, group])
 
         # Check individual flags.
         assert root.IsActive()
@@ -523,7 +533,7 @@ class TestUsdPrim(unittest.TestCase):
             # but paths to non-existent files fail
             assert s2.ResolveIdentifierToEditTarget("./noFile."+fmt) == ""
             # and paths relative to in-memory layers fail (expected errors?)
-            print "bazRefs = " + s1.ResolveIdentifierToEditTarget("./refTest2."+fmt)
+            print("bazRefs = " + s1.ResolveIdentifierToEditTarget("./refTest2."+fmt))
             assert s1.ResolveIdentifierToEditTarget("./refTest2."+fmt) == "" 
 
             # A good reference generates no errors or exceptions
@@ -607,6 +617,120 @@ class TestUsdPrim(unittest.TestCase):
             f.SetPropertyOrder(l('gfedcba'))
             self.assertEqual(f.GetPropertyNames(), l('gfedcba'))
 
+            f.ClearPropertyOrder()
+            self.assertEqual(f.GetPropertyNames(), l('abcdefg'))
+
+    def test_ChildrenReorder(self):
+        def l(chars):
+            return list(x for x in chars)
+
+        def _TestAllChildren(p, expectedNames):
+            self.assertEqual(p.GetAllChildrenNames(), expectedNames)
+            self.assertEqual(p.GetAllChildren(), 
+                             [p.GetChild(name) for name in expectedNames])
+
+        def _TestChildren(p, expectedNames):
+            self.assertEqual(p.GetChildrenNames(), expectedNames)
+            self.assertEqual(p.GetChildren(), 
+                             [p.GetChild(name) for name in expectedNames])
+
+        def _TestOrder(s, parentPath):
+
+            f = s.DefinePrim(parentPath) if parentPath else s.GetPseudoRoot()
+
+            s.SetEditTarget(s.GetRootLayer())
+            for name in l('abcd'):
+                s.DefinePrim(parentPath + '/' + name)
+
+            s.SetEditTarget(s.GetSessionLayer())
+            for name in l('defg'):
+                s.OverridePrim(parentPath + '/' + name)
+
+            # Start with no primOrder set. Default order.
+            self.assertIsNone(f.GetMetadata("primOrder"))
+            self.assertEqual(f.GetChildrenReorder(), [])
+            _TestAllChildren(f, l('abcdefg'))
+            _TestChildren(f, l('abcd'))
+
+            # Set partial ordering. 
+            f.SetChildrenReorder(l('edc'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('edc'))
+            self.assertEqual(f.GetChildrenReorder(), l('edc'))
+            _TestAllChildren(f, l('abefgdc'))
+            _TestChildren(f, l('abdc'))
+
+            # Empty ordering. Back to default order.
+            f.SetChildrenReorder([])
+            self.assertEqual(f.GetMetadata("primOrder"), [])
+            self.assertEqual(f.GetChildrenReorder(), [])
+            _TestAllChildren(f, l('abcdefg'))
+            _TestChildren(f, l('abcd'))
+
+            # Single entry in order. Still maintains default ordering.
+            f.SetChildrenReorder(l('d'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('d'))
+            self.assertEqual(f.GetChildrenReorder(), l('d'))
+            _TestAllChildren(f, l('abcdefg'))
+            _TestChildren(f, l('abcd'))
+
+            # Set ordering with no valid names. Default ordering.
+            f.SetChildrenReorder(l('xyz'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('xyz'))
+            self.assertEqual(f.GetChildrenReorder(), l('xyz'))
+            _TestAllChildren(f, l('abcdefg'))
+            _TestChildren(f, l('abcd'))
+
+            # Set reorder with interspersed invalid names. Reorders with just 
+            # the valid names.
+            f.SetChildrenReorder(l('xeydzc'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('xeydzc'))
+            self.assertEqual(f.GetChildrenReorder(), l('xeydzc'))
+            _TestAllChildren(f, l('abefgdc'))
+            _TestChildren(f, l('abdc'))
+
+            # Full reorder containing all the child prims.
+            f.SetChildrenReorder(l('gfedcba'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('gfedcba'))
+            self.assertEqual(f.GetChildrenReorder(), l('gfedcba'))
+            _TestAllChildren(f, l('gfedcba'))
+            _TestChildren(f, l('dcba'))
+
+            # Clear the reorder on the session layer. Return to original order.
+            f.ClearChildrenReorder()
+            self.assertIsNone(f.GetMetadata("primOrder"))
+            self.assertEqual(f.GetChildrenReorder(), [])
+            _TestAllChildren(f, l('abcdefg'))
+            _TestChildren(f, l('abcd'))
+
+            # Do a full reorder on the root layer.
+            with Usd.EditContext(s, s.GetRootLayer()):
+                f.SetChildrenReorder(l('gfedcba'))
+            self.assertEqual(f.GetMetadata("primOrder"), l('gfedcba'))
+            self.assertEqual(f.GetChildrenReorder(), l('gfedcba'))
+            # Because the reorder is authored on the root layer, it only 
+            # reorders the prims that are defined on the root layer because 
+            # prim order is processed during composition. The prims defined on
+            # the session layer are not reordered.
+            _TestAllChildren(f, l('dcbaefg'))
+            _TestChildren(f, l('dcba'))
+
+            # Set an empty ordering on session layer. The strongest resolved
+            # metadata is now empty, but the reordering from the root layer
+            # metadata still takes place.
+            f.SetChildrenReorder([])
+            self.assertEqual(f.GetMetadata("primOrder"), [])
+            self.assertEqual(f.GetChildrenReorder(), [])
+            _TestAllChildren(f, l('dcbaefg'))
+            _TestChildren(f, l('dcba'))
+
+        for fmt in allFormats:
+            sl = Sdf.Layer.CreateAnonymous(fmt)
+            s = Usd.Stage.CreateInMemory('PrimReorder.'+fmt, sl)
+            # Test the pseudoroot first before testing on a "real" prim parent
+            # which gets added as a pseudoroot child.
+            _TestOrder(s, '')
+            _TestOrder(s, '/foo')
+
     def test_DefaultPrim(self):
         for fmt in allFormats:
             # No default prim to start.
@@ -647,7 +771,7 @@ class TestUsdPrim(unittest.TestCase):
     def test_GetNextSibling(self):
         import random, time
         seed = int(time.time())
-        print 'GetNextSibling() random seed:', seed
+        print('GetNextSibling() random seed:', seed)
         random.seed(seed)
 
         for fmt in allFormats:
@@ -684,31 +808,6 @@ class TestUsdPrim(unittest.TestCase):
 
             make(s, names, 4)
             test(s.GetPseudoRoot())
-
-    def test_PrimOrder(self):
-        # Create a stage with three root prims.
-        orderBefore = ['Foo', 'Bar', 'Baz']
-        orderAfter = ['Baz', 'Foo', 'Bar']
-
-        for fmt in allFormats:
-            s = Usd.Stage.CreateInMemory('PrimOrder.'+fmt)
-            children = [s.DefinePrim('/' + p) for p in orderBefore]
-            self.assertEqual(s.GetPseudoRoot().GetChildren(), children)
-
-            # Author reorder, assert they are reordered.
-            s.GetPseudoRoot().SetMetadata('primOrder', orderAfter)
-            self.assertEqual(s.GetPseudoRoot().GetChildren(),
-                        [s.GetPrimAtPath('/' + p) for p in orderAfter])
-
-            # Try the same thing with non-root prims.
-            s = Usd.Stage.CreateInMemory('PrimOrder.'+fmt)
-            children = [s.DefinePrim('/Root/' + p) for p in orderBefore]
-            self.assertEqual(s.GetPrimAtPath('/Root').GetChildren(), children)
-
-            # Author reorder, assert they are reordered.
-            s.GetPrimAtPath('/Root').SetMetadata('primOrder', orderAfter)
-            self.assertEqual(s.GetPrimAtPath('/Root').GetChildren(),
-                        [s.GetPrimAtPath('/Root/' + p) for p in orderAfter])
 
     def test_Instanceable(self):
         for fmt in allFormats:
@@ -777,14 +876,14 @@ class TestUsdPrim(unittest.TestCase):
             _ValidatePrimIndexes(s.GetPrimAtPath('/Ref'))
             _ValidatePrimIndexes(s.GetPrimAtPath('/Ref/Child'))
 
-            # Master prims do not expose a valid prim index.
-            master = s.GetMasters()[0]
-            _ValidateNoPrimIndexes(master)
+            # Prototype prims do not expose a valid prim index.
+            prototype = s.GetPrototypes()[0]
+            _ValidateNoPrimIndexes(prototype)
 
-            # However, prims beneath masters do expose a valid prim index.
+            # However, prims beneath prototypes do expose a valid prim index.
             # Note this prim index may change from run to run depending on
-            # which is selected as the source for the master.
-            _ValidatePrimIndexes(master.GetChild('Child'))
+            # which is selected as the source for the prototype.
+            _ValidatePrimIndexes(prototype.GetChild('Child'))
             
     def test_PseudoRoot(self):
         for fmt in allFormats:
@@ -830,13 +929,18 @@ class TestUsdPrim(unittest.TestCase):
         self.assertTrue(Usd.CollectionAPI().IsMultipleApplyAPISchema())
 
         self.assertTrue(
-            Usd.CollectionAPI().GetSchemaType() == Usd.SchemaType.MultipleApplyAPI)
+            Usd.CollectionAPI().GetSchemaKind() == Usd.SchemaKind.MultipleApplyAPI)
         self.assertTrue(
-            Usd.CollectionAPI().GetSchemaType() != Usd.SchemaType.SingleApplyAPI)
+            Usd.CollectionAPI().GetSchemaKind() != Usd.SchemaKind.SingleApplyAPI)
         self.assertTrue(
-            Usd.ModelAPI().GetSchemaType() == Usd.SchemaType.NonAppliedAPI)
+            Usd.ModelAPI().GetSchemaKind() == Usd.SchemaKind.NonAppliedAPI)
         self.assertTrue(
-            Usd.ClipsAPI().GetSchemaType() == Usd.SchemaType.NonAppliedAPI)
+            Usd.ClipsAPI().GetSchemaKind() == Usd.SchemaKind.NonAppliedAPI)
+
+        # Verify that we an exception but don't crash when applying to the 
+        # null prim.
+        with self.assertRaises(Tf.ErrorException):
+            self.assertFalse(Usd.CollectionAPI.Apply(Usd.Prim(), "root"))
 
         for fmt in allFormats:
             sessionLayer = Sdf.Layer.CreateNew("SessionLayer.%s" % fmt)
@@ -847,7 +951,7 @@ class TestUsdPrim(unittest.TestCase):
             world= s.OverridePrim('/world')
             self.assertEqual([], world.GetAppliedSchemas())
 
-            rootCollAPI = Usd.CollectionAPI.ApplyCollection(world, "root")
+            rootCollAPI = Usd.CollectionAPI.Apply(world, "root")
             self.assertTrue(rootCollAPI)
 
             world = rootCollAPI.GetPrim()
@@ -873,7 +977,7 @@ class TestUsdPrim(unittest.TestCase):
 
             # Switch the edit target to the session layer and test bug 156929
             s.SetEditTarget(Usd.EditTarget(s.GetSessionLayer()))
-            sessionCollAPI = Usd.CollectionAPI.ApplyCollection(world, "session")
+            sessionCollAPI = Usd.CollectionAPI.Apply(world, "session")
             self.assertTrue(sessionCollAPI)
             self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
                              world.GetAppliedSchemas())
@@ -881,8 +985,7 @@ class TestUsdPrim(unittest.TestCase):
             self.assertTrue(world.HasAPI(Usd.CollectionAPI))
 
             # Ensure duplicates aren't picked up
-            anotherSessionCollAPI = Usd.CollectionAPI.ApplyCollection(world, 
-                                                                       "session")
+            anotherSessionCollAPI = Usd.CollectionAPI.Apply(world, "session")
             self.assertTrue(anotherSessionCollAPI)
             self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
                              world.GetAppliedSchemas())
@@ -890,8 +993,7 @@ class TestUsdPrim(unittest.TestCase):
             # Add a duplicate in the root layer and ensure that there are no 
             # duplicates in the composed result.
             s.SetEditTarget(Usd.EditTarget(s.GetRootLayer()))
-            rootLayerSessionCollAPI = Usd.CollectionAPI.ApplyCollection(world,
-                    "session")
+            rootLayerSessionCollAPI = Usd.CollectionAPI.Apply(world, "session")
             self.assertTrue(rootLayerSessionCollAPI)
             self.assertEqual(['CollectionAPI:session', 'CollectionAPI:root'],
                              world.GetAppliedSchemas())
@@ -907,6 +1009,96 @@ class TestUsdPrim(unittest.TestCase):
 
             p = s.OverridePrim('/Foo/Bar')
             self.assertTrue(p)
+
+    def test_GetAtPath(self):
+        """Tests accessing UsdObjects of various types on the same stage
+        as a prim."""
+        for fmt in allFormats:
+            stage = Usd.Stage.CreateInMemory('GetAtPath.%s' % fmt)
+            child = stage.DefinePrim("/Parent/Child")
+            grandchild = stage.DefinePrim("/Parent/Child/Grandchild")
+            sibling = stage.DefinePrim("/Parent/Sibling")
+
+            x = sibling.CreateAttribute("x", Sdf.ValueTypeNames.Int)
+            y = grandchild.CreateRelationship("y")
+
+            # Double check axioms about prim validity
+            self.assertFalse(Usd.Prim())
+            self.assertTrue(child)
+            self.assertTrue(grandchild)
+            self.assertTrue(sibling)
+            self.assertTrue(y)
+            self.assertTrue(x)
+            self.assertFalse(stage.GetPrimAtPath(Sdf.Path.emptyPath))
+
+            # Test relative prim paths
+            self.assertEqual(child.GetPrimAtPath("../Sibling"), sibling)
+            self.assertEqual(child.GetPrimAtPath("Grandchild"), grandchild)
+            self.assertEqual(child.GetPrimAtPath(".."), child.GetParent())
+
+            # Test absolute prim paths
+            self.assertEqual(child.GetPrimAtPath("/Parent/Sibling"), sibling)
+            self.assertEqual(child.GetPrimAtPath("../Sibling"),
+                             child.GetObjectAtPath("../Sibling"))
+
+            # Test invalid paths
+            self.assertFalse(child.GetPrimAtPath("../InvalidPath"))
+
+            # Test relative propeties
+            self.assertEqual(child.GetRelationshipAtPath("Grandchild.y"), y)
+            self.assertEqual(child.GetAttributeAtPath("../Sibling.x"), x)
+            self.assertEqual(child.GetPropertyAtPath("Grandchild.y"), y)
+            self.assertEqual(child.GetPropertyAtPath("../Sibling.x"), x)
+
+            # Test Absolute propeties
+            self.assertEqual(
+                child.GetRelationshipAtPath("/Parent/Child/Grandchild.y"), y)
+            self.assertEqual(child.GetAttributeAtPath("/Parent/Sibling.x"), x)
+            self.assertEqual(
+                child.GetPropertyAtPath("/Parent/Child/Grandchild.y"), y)
+            self.assertEqual(child.GetPropertyAtPath("/Parent/Sibling.x"), x)
+            
+            # Test invalid paths
+            self.assertFalse(child.GetPropertyAtPath(".z"))
+            self.assertFalse(child.GetRelationshipAtPath(".z"))
+            self.assertFalse(child.GetAttributeAtPath(".z"))
+
+            # Test valid paths but invalid types
+            self.assertFalse(child.GetPrimAtPath("/Parent/Child/Grandchild.y"))
+            self.assertFalse(child.GetPrimAtPath("/Parent/Sibling.x"))
+            self.assertFalse(
+                child.GetAttributeAtPath("/Parent/Child/Grandchild.y"))
+            self.assertFalse(child.GetRelationshipAtPath(
+                "/Parent/Sibling.x"))
+            self.assertFalse(child.GetAttributeAtPath(
+                "/Parent/Child/Grandchild"))
+            self.assertFalse(child.GetRelationshipAtPath(
+                "/Parent/Sibling"))
+
+            # Test that empty paths don't raise exceptions
+            # NOTE-- this is intentionally different than SdfPrimSpec
+            # for symmetry with UsdStage's API
+            self.assertFalse(child.GetPrimAtPath(Sdf.Path.emptyPath))
+            self.assertFalse(child.GetObjectAtPath(Sdf.Path.emptyPath))
+            self.assertFalse(child.GetPropertyAtPath(Sdf.Path.emptyPath))
+            self.assertFalse(child.GetAttributeAtPath(Sdf.Path.emptyPath))
+            self.assertFalse(child.GetRelationshipAtPath(Sdf.Path.emptyPath))
+            
+            # Verify type deduction
+            self.assertTrue(
+                isinstance(child.GetObjectAtPath("../Sibling"), Usd.Prim))
+            self.assertTrue(
+                isinstance(child.GetObjectAtPath("../Sibling.x"),
+                Usd.Attribute))
+            self.assertTrue(
+                isinstance(child.GetObjectAtPath("Grandchild.y"),
+                Usd.Relationship))
+            self.assertTrue(
+                isinstance(child.GetPropertyAtPath("../Sibling.x"),
+                Usd.Attribute))
+            self.assertTrue(
+                isinstance(child.GetPropertyAtPath("Grandchild.y"),
+                Usd.Relationship))
 
 if __name__ == "__main__":
     unittest.main()

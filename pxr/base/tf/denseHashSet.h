@@ -33,11 +33,8 @@
 #include <vector>
 
 #include <boost/compressed_pair.hpp>
-#include <boost/operators.hpp>
 #include <boost/iterator/iterator_facade.hpp>
 #include <boost/utility.hpp>
-
-#include <cstdio>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -58,10 +55,7 @@ template <
     class    EqualElement  = std::equal_to<Element>,
     unsigned Threshold = 128
 >
-class TfDenseHashSet :
-    private boost::equality_comparable<
-        TfDenseHashSet<Element, HashFn, EqualElement, Threshold>
-    >
+class TfDenseHashSet
 {
 public:
 
@@ -108,9 +102,14 @@ public:
     ///
     TfDenseHashSet(const TfDenseHashSet &rhs)
     :   _vectorHashFnEqualFn(rhs._vectorHashFnEqualFn) {
-        if (rhs._h)
+        if (rhs._h) {
             _h.reset(new _HashMap(*rhs._h));
+        }
     }
+
+    /// Move Ctor.
+    ///
+    TfDenseHashSet(TfDenseHashSet &&rhs) = default;
 
     /// Construct from range.
     ///
@@ -125,12 +124,19 @@ public:
         insert(l.begin(), l.end());
     }
 
-    /// Assignment operator.
+    /// Copy assignment operator.
     ///
-    TfDenseHashSet &operator=(TfDenseHashSet rhs) {
-        swap(rhs);
+    TfDenseHashSet &operator=(const TfDenseHashSet &rhs) {
+        if (this != &rhs) {
+            TfDenseHashSet temp(rhs);
+            temp.swap(*this);
+        }
         return *this;
     }
+
+    /// Move assignment operator.
+    ///
+    TfDenseHashSet &operator=(TfDenseHashSet &&rhs) = default;
 
     /// Assignment from an initializer_list.
     ///
@@ -156,6 +162,10 @@ public:
         }
 
         return true;
+    }
+
+    bool operator!=(const TfDenseHashSet &rhs) const {
+        return !(*this == rhs);
     }
 
     /// Erases all of the elements
@@ -345,8 +355,7 @@ public:
     void shrink_to_fit() {
 
         // Shrink the vector to best size.
-        //XXX: When switching to c++0x we should call _vec().shrink_to_fit().
-        _Vector(_vec()).swap(_vec());
+        _vec().shrink_to_fit();
 
         if (!_h)
             return;

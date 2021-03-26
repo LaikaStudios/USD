@@ -26,23 +26,23 @@
 
 #include "pxr/pxr.h"
 #include "pxr/usd/usdShade/api.h"
-#include "pxr/usd/usd/attribute.h"
-#include "pxr/usd/usd/property.h"
-#include "pxr/usd/usd/relationship.h"
-#include "pxr/usd/ndr/declare.h"
+#include "pxr/usd/usdShade/types.h"
 #include "pxr/usd/usdShade/utils.h"
+#include "pxr/usd/usd/attribute.h"
+#include "pxr/usd/ndr/declare.h"
 
 #include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 class UsdShadeConnectableAPI;
+struct UsdShadeConnectionSourceInfo;
 class UsdShadeInput;
 
 /// \class UsdShadeOutput
 /// 
 /// This class encapsulates a shader or node-graph output, which is a 
-/// connectable property representing a typed, externally computed value.
+/// connectable attribute representing a typed, externally computed value.
 /// 
 class UsdShadeOutput
 {
@@ -56,11 +56,8 @@ public:
 
     /// Get the name of the attribute associated with the output. 
     /// 
-    /// \note Returns the relationship name if it represents a terminal on a 
-    /// material.
-    /// 
     TfToken const &GetFullName() const { 
-        return _prop.GetName(); 
+        return _attr.GetName(); 
     }
 
     /// Returns the name of the output. 
@@ -68,22 +65,16 @@ public:
     /// We call this the base name since it strips off the "outputs:" namespace 
     /// prefix from the attribute name, and returns it.
     /// 
-    /// \note This simply returns the full property name if the Output represents a 
-    /// terminal on a material.
-    /// 
     USDSHADE_API
     TfToken GetBaseName() const;
 
     /// Get the prim that the output belongs to.
     UsdPrim GetPrim() const {
-        return _prop.GetPrim();
+        return _attr.GetPrim();
     }
 
     /// Get the "scene description" value type name of the attribute associated 
     /// with the output.
-    /// 
-    /// \note If this is an output belonging to a terminal on a material, which 
-    /// does not have an associated attribute, we return 'Token' as the type.
     /// 
     USDSHADE_API
     SdfValueTypeName GetTypeName() const;
@@ -214,46 +205,23 @@ public:
     /// Test whether a given UsdAttribute represents a valid Output, which
     /// implies that creating a UsdShadeOutput from the attribute will succeed.
     ///
-    /// Success implies that \c prop.IsDefined() is true.
+    /// Success implies that \c attr.IsDefined() is true.
     USDSHADE_API
     static bool IsOutput(const UsdAttribute &attr);
 
     /// Explicit UsdAttribute extractor.
-    UsdAttribute GetAttr() const { return _prop.As<UsdAttribute>(); }
+    UsdAttribute GetAttr() const { return _attr; }
     
-    /// Explicit UsdProperty extractor.
-    const UsdProperty &GetProperty() const { return _prop; }
-
     /// Allow UsdShadeOutput to auto-convert to UsdAttribute, so you can
     /// pass a UsdShadeOutput to any function that accepts a UsdAttribute or
     /// const-ref thereto.
     operator UsdAttribute () const { return GetAttr(); }
 
-    /// Allow UsdShadeOutput to auto-convert to UsdProperty, so you can
-    /// pass a UsdShadeOutput to any function that accepts a UsdProperty or
-    /// const-ref thereto.
-    operator const UsdProperty & () const { return GetProperty(); }
-
-    /// Explicit UsdRelationship extractor.
-    UsdRelationship GetRel() const { return _prop.As<UsdRelationship>(); }
-    
-    /// Returns whether the Output represents a terminal relationship on a 
-    /// material, which is a concept we'd like to retire in favor of outputs.
-    /// This is temporary convenience API.
-    bool IsTerminal() const { 
-        return static_cast<bool>(GetRel()); 
-    }
-
     /// Return true if the wrapped UsdAttribute is defined, and in
     /// addition the attribute is identified as an output.
     ///
-    /// For backwards compatibility, also returns true for the case
-    /// of a valid terminal relationship; see IsTerminal().
     bool IsDefined() const {
-        if (UsdAttribute attr = GetAttr()) {
-            return IsOutput(attr);
-        }
-        return IsTerminal();
+        return IsOutput(_attr);
     }
 
     /// @}
@@ -281,18 +249,38 @@ public:
     USDSHADE_API
     bool CanConnect(const UsdShadeOutput &sourceOutput) const;
 
-    /// Authors a connection for this Output to the source described by the 
-    /// following three elements: 
-    /// \p source, the connectable owning the source,
-    /// \p sourceName, the name of the source and 
-    /// \p sourceType, the value type of the source shading attribute.
-    ///
-    /// \p typeName if specified, is the typename of the attribute to create 
-    /// on the source if it doesn't exist. It is also used to validate whether 
-    /// the types of the source and consumer of the connection are compatible.
-    ///
+    using ConnectionModification = UsdShadeConnectionModification;
+
+    /// Authors a connection for this Output
+    /// 
+    /// \p source is a struct that describes the upstream source attribute
+    /// with all the information necessary to make a connection. See the
+    /// documentation for UsdShadeConnectionSourceInfo.
+    /// \p mod describes the operation that should be applied to the list of
+    /// connections. By default the new connection will replace any existing
+    /// connections, but it can add to the list of connections to represent
+    /// multiple input connections.
+    /// 
+    /// \return
+    /// \c true if a connection was created successfully.
+    /// \c false if \p shadingAttr or \p source is invalid.
+    /// 
+    /// \note This method does not verify the connectability of the shading
+    /// attribute to the source. Clients must invoke CanConnect() themselves
+    /// to ensure compatibility.
+    /// \note The source shading attribute is created if it doesn't exist
+    /// already.
+    /// 
     /// \sa UsdShadeConnectableAPI::ConnectToSource
     ///
+    USDSHADE_API
+    bool ConnectToSource(
+        UsdShadeConnectionSourceInfo const &source,
+        ConnectionModification const mod =
+            ConnectionModification::Replace) const;
+
+    /// \deprecated
+    /// \overload
     USDSHADE_API
     bool ConnectToSource(
         UsdShadeConnectableAPI const &source, 
@@ -321,32 +309,45 @@ public:
     USDSHADE_API
     bool ConnectToSource(UsdShadeOutput const &sourceOutput) const;
 
-    /// Finds the source of a connection for this Output.
+    /// Connects this Output to the given sources, \p sourceInfos
     /// 
-    /// \p source is an output parameter which will be set to the source 
-    /// connectable prim.
-    /// \p sourceName will be set to the name of the source shading attribute, 
-    /// which may be an input or an output, as specified by \p sourceType
-    /// \p sourceType will have the type of the source shading property, i.e.
-    /// whether it is an \c Input or \c Output
+    /// \sa UsdShadeConnectableAPI::SetConnectedSources
     ///
-    /// \return 
-    /// \c true if the shading property is connected to a valid, defined source
-    /// attribute.
-    /// \c false if the shading property is not connected to a single, defined 
-    /// source attribute. 
+    USDSHADE_API
+    bool SetConnectedSources(
+        std::vector<UsdShadeConnectionSourceInfo> const &sourceInfos) const;
+
+    // XXX move to new header
+    using SourceInfoVector = TfSmallVector<UsdShadeConnectionSourceInfo, 1>;
+
+    /// Finds the valid sources of connections for the Output.
     /// 
-    /// \note The python wrapping for this method returns a 
-    /// (source, sourceName, sourceType) tuple if the parameter is connected, 
-    /// else \c None
+    /// \p invalidSourcePaths is an optional output parameter to collect the
+    /// invalid source paths that have not been reported in the returned vector.
+    /// 
+    /// Returns a vector of \p UsdShadeConnectionSourceInfo structs with
+    /// information about each upsteam attribute. If the vector is empty, there
+    /// have been no valid connections.
+    /// 
+    /// \note A valid connection requires the existence of the source attribute
+    /// and also requires that the source prim is UsdShadeConnectableAPI
+    /// compatible.
+    /// \note The python wrapping returns a tuple with the valid connections
+    /// first, followed by the invalid source paths.
+    /// 
+    /// \sa UsdShadeConnectableAPI::GetConnectedSources
     ///
-    /// \sa UsdShadeConnectableAPI::GetConnectedSource
-    ///
+    USDSHADE_API
+    SourceInfoVector GetConnectedSources(
+        SdfPathVector *invalidSourcePaths = nullptr) const;
+
+    /// \deprecated Please use GetConnectedSources instead
     USDSHADE_API
     bool GetConnectedSource(UsdShadeConnectableAPI *source, 
                             TfToken *sourceName,
                             UsdShadeAttributeType *sourceType) const;
 
+    /// \deprecated
     /// Returns the "raw" (authored) connected source paths for this Output.
     /// 
     /// \sa UsdShadeConnectableAPI::GetRawConnectedSourcePaths
@@ -371,22 +372,42 @@ public:
     USDSHADE_API
     bool IsSourceConnectionFromBaseMaterial() const;
 
-    /// Disconnect source for this Output.
+    /// Disconnect source for this Output. If \p sourceAttr is valid, only a
+    /// connection to the specified attribute is disconnected, otherwise all
+    /// connections are removed.
     /// 
     /// \sa UsdShadeConnectableAPI::DisconnectSource
     ///
     USDSHADE_API
-    bool DisconnectSource() const;
+    bool DisconnectSource(UsdAttribute const &sourceAttr = UsdAttribute()) const;
 
-    /// Clears source for this shading property in the current UsdEditTarget.
+    /// Clears sources for this Output in the current UsdEditTarget.
     ///
     /// Most of the time, what you probably want is DisconnectSource()
     /// rather than this function.
     ///
-    /// \sa UsdShadeConnectableAPI::ClearSource
+    /// \sa UsdShadeConnectableAPI::ClearSources
     ///
     USDSHADE_API
+    bool ClearSources() const;
+
+    /// \deprecated
+    USDSHADE_API
     bool ClearSource() const;
+
+    /// @}
+
+    // -------------------------------------------------------------------------
+    /// \name Connected Value API
+    // -------------------------------------------------------------------------
+    /// @{
+
+    /// \brief Find what is connected to this Output recursively
+    ///
+    /// \sa UsdShadeUtils::GetValueProducingAttributes
+    USDSHADE_API
+    UsdShadeAttributeVector GetValueProducingAttributes(
+        bool shaderOutputsOnly = false) const;
 
     /// @}
 
@@ -399,18 +420,17 @@ public:
     /// Equality comparison. Returns true if \a lhs and \a rhs represent the 
     /// same UsdShadeOutput, false otherwise.
     friend bool operator==(const UsdShadeOutput &lhs, const UsdShadeOutput &rhs) {
-        return lhs.GetProperty() == rhs.GetProperty();
+        return lhs.GetAttr() == rhs.GetAttr();
+    }
+
+    /// Inequality comparison. Return false if \a lhs and \a rhs represent the
+    /// same UsdShadeOutput, true otherwise.
+    friend bool operator!=(const UsdShadeOutput &lhs, const UsdShadeOutput &rhs) {
+        return !(lhs == rhs);
     }
 
 private:
     friend class UsdShadeConnectableAPI;
-
-    // Befriend UsdRiMaterialAPI which will provide a backwards compatible 
-    // interface for managing terminal relationships, which turn into outputs
-    // in the new encoding of shading networks.
-    // This is temporary to assist in the transition to the new shading 
-    // encoding.
-    friend class UsdRiMaterialAPI;
 
     // Constructor that creates a UsdShadeOutput with the given name on the 
     // given prim.
@@ -419,28 +439,7 @@ private:
                    TfToken const &name,
                    SdfValueTypeName const &typeName);
 
-    // Speculative constructor that will produce a valid UsdShadeOutput when 
-    // \p rel represents a terminal relationship on a material, a concept that 
-    // has been retired in favor of outputs represented as (attribute, 
-    // relationship) pair.
-    // 
-    // Outputs wrapping a terminal relationship are always considered valid 
-    // as long as the relationship is defined and valid.
-    // 
-    // This exists only to allow higher level API to be backwards compatible
-    // and treat terminals and outputs uniformly.
-    // 
-    USDSHADE_API
-    explicit UsdShadeOutput(const UsdRelationship &rel);
-
-    // Constructor that wraps the given shading property in a UsdShadeOutput
-    // object.
-    explicit UsdShadeOutput(const UsdProperty &prop);
-
-    // This is currently a relationship if the output belongs to a node-graph.
-    // In the future, all outputs will have associated attributes and we 
-    // can switch this to be a UsdAttribute instead of UsdProperty.
-    UsdProperty _prop;
+    UsdAttribute _attr;
 };
 
 

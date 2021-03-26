@@ -3,6 +3,7 @@ set(PXR_PACKAGE rmanArgsParser)
 
 pxr_plugin(rmanArgsParser
     LIBRARIES
+        arch
         gf
         tf
         vt
@@ -20,9 +21,6 @@ pxr_plugin(rmanArgsParser
         api.h
         pugixml/pugiconfig.hpp
         pugixml/pugixml.hpp
-
-    PYTHON_CPPFILES
-        moduleDeps.cpp
 
     PYMODULE_CPPFILES
         module.cpp

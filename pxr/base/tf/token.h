@@ -34,15 +34,13 @@
 #include "pxr/base/tf/api.h"
 #include "pxr/base/tf/diagnosticLite.h"
 #include "pxr/base/tf/hash.h"
-#include "pxr/base/tf/pointerAndBits.h"
-#include "pxr/base/tf/traits.h"
-
 #include "pxr/base/tf/hashset.h"
+#include "pxr/base/tf/pointerAndBits.h"
+
 #include <atomic>
 #include <iosfwd>
 #include <string>
 #include <vector>
-#include <map>
 #include <set>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -162,7 +160,7 @@ public:
     // The hash is based on the token's storage identity; this is immutable
     // as long as the token is in use anywhere in the process.
     //
-    size_t Hash() const { return TfHash()(_rep.Get()); }
+    inline size_t Hash() const;
 
     /// Functor to use for hash maps from tokens to other things.
     struct HashFunctor {
@@ -218,10 +216,8 @@ public:
     
     /// Equality operator
     bool operator==(TfToken const& o) const {
-        // Equal if pointers & bits are equal, or if just pointers are.  Done
-        // this way to avoid the bitwise operations for common cases.
-        return _rep.GetLiteral() == o._rep.GetLiteral() ||
-            _rep.Get() == o._rep.Get();
+        // Equal if pointers & bits are equal, or if just pointers are.
+        return _rep.Get() == o._rep.Get();
     }
 
     /// Equality operator
@@ -310,6 +306,13 @@ public:
 
     /// Stream insertion.
     friend TF_API std::ostream &operator <<(std::ostream &stream, TfToken const&);
+
+    /// TfHash support.
+    template <class HashState>
+    friend void
+    TfHashAppend(HashState &h, TfToken const &token) {
+        h.Append(token._rep.Get());
+    }
 
 private:
     // Add global swap overload.
@@ -409,6 +412,12 @@ private:
 
     mutable TfPointerAndBits<const _Rep> _rep;
 };
+
+inline size_t
+TfToken::Hash() const
+{
+    return TfHash()(*this);
+}
 
 /// Fast but non-lexicographical (in fact, arbitrary) less-than comparison for
 /// TfTokens.  Should only be used in performance-critical cases.

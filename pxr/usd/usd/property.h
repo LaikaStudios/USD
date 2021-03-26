@@ -55,10 +55,7 @@ class UsdProperty;
 class UsdProperty : public UsdObject {
 public:
     /// Construct an invalid property.
-    UsdProperty()
-        : UsdObject(UsdTypeProperty, Usd_PrimDataHandle(), SdfPath(), TfToken())
-    {
-    }
+    UsdProperty() : UsdObject(_Null<UsdProperty>()) {}
 
     // --------------------------------------------------------------------- //
     /// \name Object and Namespace Accessors
@@ -238,7 +235,10 @@ public:
     // --------------------------------------------------------------------- //
 
     /// Flattens this property to a property spec with the same name 
-    /// beneath the given \p parent prim in the current edit target.
+    /// beneath the given \p parent prim in the edit target of its owning stage.
+    ///
+    /// The \p parent prim may belong to a different stage than this property's 
+    /// owning stage.
     ///
     /// Flattening authors all authored resolved values and metadata for 
     /// this property into the destination property spec. If this property
@@ -259,21 +259,34 @@ public:
 
     /// \overload
     /// Flattens this property to a property spec with the given
-    /// \p propName beneath the given \p parent prim in the current
-    /// edit target.
+    /// \p propName beneath the given \p parent prim in the edit target of its 
+    /// owning stage.
+    ///
+    /// The \p parent prim may belong to a different stage than this property's 
+    /// owning stage.
     USD_API
     UsdProperty FlattenTo(const UsdPrim &parent,
                           const TfToken &propName) const;
 
     /// \overload
     /// Flattens this property to a property spec for the given
-    /// \p property in the current edit target.
+    /// \p property in the edit target of its owning prim's stage.
+    ///
+    /// The \p property owning prim may belong to a different stage than this 
+    /// property's owning stage.
     USD_API
     UsdProperty FlattenTo(const UsdProperty &property) const;
 
 protected:
-    bool _GetTargets(SdfSpecType specType, SdfPathVector *out) const;
+    template <class Derived>
+    UsdProperty(_Null<Derived>) : UsdObject(_Null<Derived>()) {}
 
+    // Gets the targets of the given spec type. Returns true if an authored
+    // opinion is found and no composition errors occured. If foundErrors is
+    // provided, it will be set to true only if errors are encountered.
+    bool _GetTargets(SdfSpecType specType, SdfPathVector *out,
+                     bool *foundErrors = nullptr) const;
+    
 private:
     friend class UsdAttribute;
     friend class UsdObject;

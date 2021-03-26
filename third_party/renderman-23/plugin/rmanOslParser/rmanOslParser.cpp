@@ -55,6 +55,7 @@ TF_DEFINE_PRIVATE_TOKENS(
 
     ((arraySize, "arraySize"))
     ((vstructMember, "vstructmember"))
+    (sdrDefinitionName)
 
     // Discovery and source type
     ((discoveryType, "oso"))
@@ -74,21 +75,25 @@ RmanOslParserPlugin::GetSourceType() const
     return _tokens->sourceType;
 }
 
-RmanOslParserPlugin::RmanOslParserPlugin()
+static std::unique_ptr<RixShaderQuery>
+_getShaderQuery()
 {
-    m_sq = nullptr;
     RixContext* ctx = RixGetContextViaRMANTREE();
     if (!ctx)
     {
-        return; 
+        return nullptr; 
     }
 
     RixShaderInfo* si = (RixShaderInfo*)ctx->GetRixInterface(k_RixShaderInfo);
     if (!si)
     {
-        return; 
+        return nullptr;  
     }
-    m_sq = si->CreateQuery();
+    return std::unique_ptr<RixShaderQuery>(si->CreateQuery());
+}
+
+RmanOslParserPlugin::RmanOslParserPlugin()
+{
 }
 
 RmanOslParserPlugin::~RmanOslParserPlugin()
@@ -99,7 +104,8 @@ RmanOslParserPlugin::~RmanOslParserPlugin()
 NdrNodeUniquePtr
 RmanOslParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
 {
-    if (!m_sq)
+    std::unique_ptr<RixShaderQuery> sq = _getShaderQuery();
+    if (!sq)
     {
         TF_WARN("Could not obtain an instance of RixShaderQuery");
         return NdrParserPlugin::GetInvalidNode(discoveryResult);
@@ -124,7 +130,7 @@ RmanOslParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
         }
 
        // Attempt to parse the node
-        hasErrors = m_sq->Open(discoveryResult.resolvedUri.c_str(), ""); 
+        hasErrors = sq->Open(discoveryResult.resolvedUri.c_str(), ""); 
 
     }
     else {
@@ -133,7 +139,7 @@ RmanOslParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
         return NdrParserPlugin::GetInvalidNode(discoveryResult);
     }
 
-    std::string errors = m_sq->LastError();
+    std::string errors = sq->LastError();
     if (hasErrors || !errors.empty()) {
         TF_WARN("Could not parse OSL shader at URI [%s]. An invalid Sdr node "
                 "definition will be created. %s%s",
@@ -154,10 +160,12 @@ RmanOslParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
             _tokens->sourceType,
             _tokens->sourceType,    // OSL shaders don't declare different types
                                     // so use the same type as the source type
-            discoveryResult.uri,
             discoveryResult.resolvedUri,
-            _getNodeProperties(discoveryResult),
-            _getNodeMetadata(discoveryResult.metadata),
+            discoveryResult.resolvedUri,    // Definitive assertion that the
+                                            // implementation is the same asset
+                                            // as the definition
+            _getNodeProperties(sq.get(), discoveryResult),
+            _getNodeMetadata(sq.get(), discoveryResult.metadata),
             discoveryResult.sourceCode
         )
     );
@@ -165,16 +173,17 @@ RmanOslParserPlugin::Parse(const NdrNodeDiscoveryResult& discoveryResult)
 
 NdrPropertyUniquePtrVec
 RmanOslParserPlugin::_getNodeProperties(
+    const RixShaderQuery* sq,
     const NdrNodeDiscoveryResult& discoveryResult) const
 {
     NdrPropertyUniquePtrVec properties;
-    const int nParams = m_sq->ParameterCount();
+    const int nParams = sq->ParameterCount();
 
-    RixShaderParameter const * const *params = m_sq->Parameters();
+    RixShaderParameter const * const *params = sq->Parameters();
 
     for (int i = 0; i < nParams; ++i) {
         const RixShaderParameter* param = params[i]; 
-        const std::string propName = param->Name();
+        std::string propName = param->Name();
 
         // Struct members are not supported
         if (propName.find('.') != std::string::npos) {
@@ -193,24 +202,41 @@ RmanOslParserPlugin::_getNodeProperties(
 
         // Non-standard properties in the metadata are considered hints
         NdrTokenMap hints;
-        for (const auto& meta : metadata) {
+        std::string  definitionName;
+        for (auto metaIt = metadata.cbegin(); metaIt != metadata.cend(); ) {
             if (std::find(SdrPropertyMetadata->allTokens.begin(),
                           SdrPropertyMetadata->allTokens.end(),
-                          meta.first) != SdrPropertyMetadata->allTokens.end()){
+                          metaIt->first) != SdrPropertyMetadata->allTokens.end()){
+                metaIt++;
                 continue;
             }
 
+            if (metaIt->first == _tokens->sdrDefinitionName){
+                definitionName = metaIt->second;
+                metaIt = metadata.erase(metaIt);
+                continue;
+            }
+            
             // The metadata sometimes incorrectly specifies array size; this
             // value is not respected
-            if (meta.first == _tokens->arraySize) {
+            if (metaIt->first == _tokens->arraySize) {
                 TF_DEBUG(NDR_PARSING).Msg(
                     "Ignoring bad 'arraySize' attribute on property [%s] "
                     "on OSL shader [%s]",
                     propName.c_str(), discoveryResult.name.c_str());
+                metaIt = metadata.erase(metaIt);
                 continue;
             }
 
-            hints.insert(meta);
+            hints.insert(*metaIt++);
+        }
+
+        // If we found 'definitionName' metadata, we actually need to 
+        // change the name of the property to match, using the OSL
+        // parameter name as the ImplementationName
+        if (!definitionName.empty()){
+            metadata[SdrPropertyMetadata->ImplementationName] = TfToken(propName);
+            propName = definitionName;
         }
 
         // Extract options
@@ -296,13 +322,14 @@ RmanOslParserPlugin::_injectParserMetadata(NdrTokenMap& metadata,
 
 NdrTokenMap
 RmanOslParserPlugin::_getNodeMetadata(
+    const RixShaderQuery* sq,
     const NdrTokenMap &baseMetadata) const
 {
     NdrTokenMap nodeMetadata = baseMetadata;
 
     // Convert the OSL metadata to a dict. 
-    const int nParams = m_sq->MetaDataCount();
-    RixShaderParameter const * const *metaData = m_sq->MetaData();
+    const int nParams = sq->MetaDataCount();
+    RixShaderParameter const * const *metaData = sq->MetaData();
 
     for (int i = 0; i < nParams; ++i) {
         const RixShaderParameter* md = metaData[i]; 
